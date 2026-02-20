@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS MINDMAP_DB.PUBLIC.SILVER_PAPERS (
     conclusion TEXT,
     reference_list VARIANT,
     citation_list VARIANT,
-    embedding VECTOR(FLOAT, 384)
+    embedding VECTOR(FLOAT, 384),
+    similar_embeddings_ids VARIANT, -- List of paper IDs with similar embeddings (optional, can be populated later
 );
 
 -- GOLD LAYER: Insights (Knowledge Graph Edges)

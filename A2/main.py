@@ -35,18 +35,18 @@ def pipeline(
 ):
     """Full pipeline orchestrator"""
     print("Step 1: Ingesting papers from arXiv...")
-    # ingest_from_arxiv.remote(query=query, max_results=max_results)
+    ingest_from_arxiv.remote(query=query, max_results=max_results)
     
     print("Step 2: Transforming Bronze → Silver...")
-    # transform_main.remote()
+    transform_main.remote()
     
     print("Step 3: Generating embeddings...")
-    # run_embedding_batch.remote(
-    #     limit=max_results,
-    #     populate_similar=True,
-    #     min_corpus_size_for_neighbors=threshold,
-    #     k=k
-    # )
+    run_embedding_batch.remote(
+        limit=max_results,
+        populate_similar=True,
+        min_corpus_size_for_neighbors=threshold,
+        k=k
+    )
     
     print("Step 4: Backfill older papers...")
     backfill_similar_ids.remote(limit=max_results, k=k)

@@ -1,26 +1,9 @@
 # Offline worker to compute and backfill embeddings for papers in SILVER_PAPERS.
 # Also computes and caches top-k similar paper ids based on embedding similarity.
-
-import modal
 from typing import List, Dict, Any, Tuple, Optional
 import json
-from utils import _connect_to_snowflake
-
-# ---- Modal image ----
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .pip_install(
-        "sentence-transformers==2.7.0",
-        "torch",
-        "snowflake-connector-python[pandas]==3.12.0",
-        "pandas",
-        "numpy",
-    )
-)
-
-app = modal.App("mindmap-ml-workers")
-secret = modal.Secret.from_name("mindmap-1")
-
+from utils import connect_to_snowflake
+from config import app, ml_image, snowflake_secret
 
 def _fetch_unembedded_from_silver(cur, limit: int = 200) -> List[Dict[str, Any]]:
     """
@@ -42,7 +25,6 @@ def _fetch_unembedded_from_silver(cur, limit: int = 200) -> List[Dict[str, Any]]
     rows = cur.fetchall()
     cols = [c[0].lower() for c in cur.description]
     return [dict(zip(cols, r)) for r in rows]
-
 
 def _update_embeddings(cur, rows: List[Tuple[int, List[float]]]):
     """
@@ -102,7 +84,7 @@ def _count_embedded_papers(cur) -> int:
     )
     return int(cur.fetchone()[0])
 
-@app.function(image=image, secrets=[secret], timeout=60 * 20)
+@app.function(image=ml_image, secrets=[snowflake_secret], timeout=60 * 20)
 def run_embedding_batch(
     limit: int = 200,
     model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
@@ -121,7 +103,7 @@ def run_embedding_batch(
     """
     from sentence_transformers import SentenceTransformer
 
-    conn = _connect_to_snowflake()
+    conn = connect_to_snowflake()
     cur = conn.cursor()
     try:
         to_embed = _fetch_unembedded_from_silver(cur, limit=limit)
@@ -182,14 +164,14 @@ def run_embedding_batch(
         cur.close()
         conn.close()
 
-@app.function(image=image, secrets=[secret], timeout=60 * 20)
+@app.function(image=ml_image, secrets=[snowflake_secret], timeout=60 * 20)
 def backfill_similar_ids(limit: int = 200, k: int = 10) -> Dict[str, Any]:
     """
     OFFLINE job:
     Fill similar_embddings_ids for older papers that already have embeddings
     but do not have cached neighbors yet.
     """
-    conn = _connect_to_snowflake()
+    conn = connect_to_snowflake()
     cur = conn.cursor()
     try:
         cur.execute(

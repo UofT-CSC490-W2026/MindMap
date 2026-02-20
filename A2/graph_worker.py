@@ -7,6 +7,7 @@ from typing import Iterable, List, Optional, Tuple
 #from utils import connect_to_snowflake
 from config import app, image, snowflake_secret
 import json
+from itertools import islice
 
 
 def connect_to_snowflake():
@@ -63,39 +64,92 @@ def _merge_relationship(cur, source_id: int, target_id: int, rel_type: str, stre
         (source_id, target_id, rel_type, strength),
     )
 
-def _merge_citations(cur, source_id: int, citations: Iterable[dict]):
-    print(f"Merging {len(citations)} citations for paper {source_id}...")
-    for citation in citations:
-        ss_paper_id = citation.get("ss_paper_id")
-        if ss_paper_id:
-            cur.execute(
-                f"""
-                MERGE INTO {GOLD} AS target
-                USING (
-                    SELECT %s AS source_paper_id, sp."id" AS target_paper_id,
-                        'CITES' AS relationship_type, 1.0 AS strength
-                    FROM {SILVER} sp
-                    WHERE sp."ss_id" = %s
-                ) AS source
-                ON target."source_paper_id" = source.source_paper_id
-                AND target."target_paper_id" = source.target_paper_id
-                AND target."relationship_type" = source.relationship_type
-                WHEN NOT MATCHED THEN
-                    INSERT ("source_paper_id", "target_paper_id", "relationship_type", "strength")
-                    VALUES (source.source_paper_id, source.target_paper_id, source.relationship_type, source.strength)
-                """,
-                (source_id, ss_paper_id),
-            )
-            print(f"  Merged citation by ss_paper_id: {ss_paper_id}")
-        else:
-            print(f"  Skipped citation with missing ss_paper_id: {citation}")
+def _merge_citations(cur, source_id: int, citations: Iterable[str]) -> int:
+    added = 0
+    for arxiv_id in citations:
+        cur.execute(
+            f"""
+            MERGE INTO {GOLD} AS target
+            USING (
+                SELECT %s AS source_paper_id, sp.id AS target_paper_id,
+                       'CITES' AS relationship_type, 1.0 AS strength
+                FROM {SILVER} sp
+                WHERE sp.arxiv_id = %s
+            ) AS source
+            ON target.source_paper_id = source.source_paper_id
+               AND target.target_paper_id = source.target_paper_id
+               AND target.relationship_type = source.relationship_type
+            WHEN NOT MATCHED THEN
+                INSERT (source_paper_id, target_paper_id, relationship_type, strength)
+                VALUES (source.source_paper_id, source.target_paper_id, source.relationship_type, source.strength)
+            """,
+            (source_id, arxiv_id),
+        )
+        added += cur.rowcount
+    return added
 
-def _merge_similars(cur, source_id: int, similar_ids: Iterable[int]):
-    print(f"Merging {len(similar_ids)} similars for paper {source_id}...")
+def _merge_similars(cur, source_id: int, similar_ids: Iterable[int]) -> int:
+    added = 0
     for idx, sim_id in enumerate(similar_ids):
         strength = max(0.0, 1.0 - (idx * 0.1))
         print(f"  Merged similar: {sim_id} with strength {strength}")
         _merge_relationship(cur, source_id, sim_id, "SIMILAR", strength)
+        added += cur.rowcount
+    return added
+
+def _normalize_ids(value) -> List[int]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    if isinstance(value, list):
+        ids = []
+        for v in value:
+            try:
+                ids.append(int(v))
+            except (TypeError, ValueError):
+                continue
+        return ids
+    return []
+
+def _chunked(iterable, size: int):
+    it = iter(iterable)
+    while True:
+        chunk = list(islice(it, size))
+        if not chunk:
+            break
+        yield chunk
+
+def _bulk_merge_edges(cur, edges: List[Tuple[int, int, str, float]]) -> int:
+    if not edges:
+        return 0
+
+    total = 0
+    for chunk in _chunked(edges, 500):
+        values_sql = ", ".join(["(%s, %s, %s, %s)"] * len(chunk))
+        flat_params = [p for row in chunk for p in row]
+        cur.execute(
+            f"""
+            MERGE INTO {GOLD} AS target
+            USING (SELECT column1 AS source_paper_id,
+                          column2 AS target_paper_id,
+                          column3 AS relationship_type,
+                          column4 AS strength
+                   FROM VALUES {values_sql}) AS source
+            ON target.source_paper_id = source.source_paper_id
+               AND target.target_paper_id = source.target_paper_id
+               AND target.relationship_type = source.relationship_type
+            WHEN NOT MATCHED THEN
+                INSERT (source_paper_id, target_paper_id, relationship_type, strength)
+                VALUES (source.source_paper_id, source.target_paper_id, source.relationship_type, source.strength)
+            """,
+            flat_params,
+        )
+        total += cur.rowcount
+    return total
 
 # -----------------------------
 # NEW FUNCTION: Hardcode some papers into SILVER for testing
@@ -135,20 +189,29 @@ def build_knowledge_graph(paper_id: int = None):
         _insert_hardcoded_test_papers(cur)
 
         papers = _fetch_papers(cur, paper_id)
+        edges = []
+
         for pid, citations, similar_ids in papers:
-            print(f"Processing paper {pid}...")
-            if citations and isinstance(citations, str):
-                try:
-                    citations = json.loads(citations)
-                except Exception as e:
-                    print(f"Failed to parse citations for paper {pid}: {e}")
-                    citations = []
+            # citations -> target ids via lookup
             if citations:
-                _merge_citations(cur, pid, citations)
-            if similar_ids:
-                _merge_similars(cur, pid, similar_ids)
+                for arxiv_id in set(citations):
+                    cur.execute(f"SELECT id FROM {SILVER} WHERE arxiv_id = %s", (arxiv_id,))
+                    row = cur.fetchone()
+                    if row and row[0] != pid:
+                        edges.append((pid, int(row[0]), "CITES", 1.0))
+
+            # similars -> normalized ids
+            for idx, sim_id in enumerate(_normalize_ids(similar_ids)):
+                if sim_id != pid:
+                    strength = max(0.0, 1.0 - (idx * 0.1))
+                    edges.append((pid, sim_id, "SIMILAR", strength))
+
+        # dedupe
+        edges = list({(a, b, c, d) for a, b, c, d in edges})
+
+        added = _bulk_merge_edges(cur, edges)
         conn.commit()
-        print(f"Built knowledge graph for {len(papers)} papers")
+        print(f"Built knowledge graph for {len(papers)} papers, edges added: {added}")
     finally:
         cur.close()
         conn.close()

@@ -26,19 +26,14 @@ def _fetch_unembedded_from_silver(cur, limit: int = 200) -> List[Dict[str, Any]]
     cols = [c[0].lower() for c in cur.description]
     return [dict(zip(cols, r)) for r in rows]
 
-def _update_embeddings(cur, rows: List[Tuple[int, List[float]]], dim: int = 384):
-    """
-    rows: (id, embedding_list)
-    Writes into a VECTOR(FLOAT, dim) column by:
-      list[float] -> JSON string -> PARSE_JSON -> cast to VECTOR
-    """
+def _update_embeddings(cur, rows, dim: int = 384):
     if not rows:
         return
 
     sql = f"""
     UPDATE MINDMAP_DB.PUBLIC.SILVER_PAPERS
-    SET embedding = PARSE_JSON(?)::VECTOR(FLOAT, {dim})
-    WHERE id = ?
+    SET embedding = PARSE_JSON(%s)::VECTOR(FLOAT, {dim})
+    WHERE id = %s
     """
 
     binds = [(json.dumps(emb), int(pid)) for pid, emb in rows]
@@ -68,7 +63,7 @@ def _write_similar_ids(cur, pid: int, sim_ids: List[int]):
     cur.execute(
         """
         UPDATE MINDMAP_DB.PUBLIC.SILVER_PAPERS
-        SET similar_embddings_ids = PARSE_JSON(%s)
+        SET similar_embeddings_ids = PARSE_JSON(%s)
         WHERE id = %s
         """,
         (json.dumps(sim_ids), int(pid)),
@@ -179,7 +174,7 @@ def backfill_similar_ids(limit: int = 200, k: int = 10) -> Dict[str, Any]:
             SELECT id
             FROM MINDMAP_DB.PUBLIC.SILVER_PAPERS
             WHERE embedding IS NOT NULL
-              AND similar_embddings_ids IS NULL
+              AND similar_embeddings_ids IS NULL
             LIMIT {int(limit)}
             """
         )
@@ -192,7 +187,7 @@ def backfill_similar_ids(limit: int = 200, k: int = 10) -> Dict[str, Any]:
             cur.execute(
                 """
                 UPDATE MINDMAP_DB.PUBLIC.SILVER_PAPERS
-                SET similar_embddings_ids = PARSE_JSON(%s)
+                SET similar_embeddings_ids = PARSE_JSON(%s)
                 WHERE id = %s
                 """,
                 (json.dumps(sim_ids), int(pid)),

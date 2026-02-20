@@ -26,23 +26,23 @@ def _fetch_unembedded_from_silver(cur, limit: int = 200) -> List[Dict[str, Any]]
     cols = [c[0].lower() for c in cur.description]
     return [dict(zip(cols, r)) for r in rows]
 
-def _update_embeddings(cur, rows: List[Tuple[int, List[float]]]):
+def _update_embeddings(cur, rows: List[Tuple[int, List[float]]], dim: int = 384):
     """
     rows: (id, embedding_list)
-    Update SILVER_PAPERS.embedding for each id.
+    Writes into a VECTOR(FLOAT, dim) column by:
+      list[float] -> JSON string -> PARSE_JSON -> cast to VECTOR
     """
     if not rows:
         return
 
-    # executemany is simplest and readable
-    cur.executemany(
-        """
-        UPDATE MINDMAP_DB.PUBLIC.SILVER_PAPERS
-        SET embedding = %s
-        WHERE id = %s
-        """,
-        [(emb, pid) for pid, emb in rows],
-    )
+    sql = f"""
+    UPDATE MINDMAP_DB.PUBLIC.SILVER_PAPERS
+    SET embedding = PARSE_JSON(?)::VECTOR(FLOAT, {dim})
+    WHERE id = ?
+    """
+
+    binds = [(json.dumps(emb), int(pid)) for pid, emb in rows]
+    cur.executemany(sql, binds)
 
 def _compute_topk_in_snowflake(cur, pid: int, k: int) -> List[int]:
     cur.execute(

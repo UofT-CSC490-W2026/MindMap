@@ -22,8 +22,8 @@ def _connect_to_snowflake():
         account=os.environ["SNOWFLAKE_ACCOUNT"],
         user=os.environ["SNOWFLAKE_USER"],
         password=os.environ["SNOWFLAKE_PASSWORD"],
-        database='MINDMAP_DB', warehouse='MINDMAP_WH',
-        schema='PUBLIC'
+        database='MINDMAP_DEV', warehouse='MINDMAP_WH',
+        schema='BRONZE'
     )
 
 
@@ -62,9 +62,10 @@ def ingest_from_arxiv(query: str, max_results: int = 5):
         
         # 3. Insert into the Bronze Table
         cur.execute(
-            "INSERT INTO BRONZE_PAPERS (raw_payload) SELECT PARSE_JSON(%s)", 
+            'INSERT INTO "MINDMAP_DEV"."BRONZE"."BRONZE_PAPERS" ("raw_payload") SELECT PARSE_JSON(%s)',
             (json_payload,)
         )
+
     
     conn.commit()
     print(f"Ingested {max_results} papers into Bronze layer.")
@@ -83,7 +84,7 @@ def peek_bronze(limit: int = 3):
 
     try:
         # Pull the raw_payload from Snowflake
-        cur.execute(f"SELECT raw_payload FROM BRONZE_PAPERS LIMIT {limit}")
+        cur.execute('SELECT "raw_payload" FROM "MINDMAP_DEV"."BRONZE"."BRONZE_PAPERS" LIMIT %s', (limit,))
         rows = cur.fetchall()
 
         print(f"\n--- BRONZE LAYER PEEK: {len(rows)} PAPERS ---\n")

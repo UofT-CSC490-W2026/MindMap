@@ -21,8 +21,8 @@ def _connect_to_snowflake():
         account=os.environ["SNOWFLAKE_ACCOUNT"],
         user=os.environ["SNOWFLAKE_USER"],
         password=os.environ["SNOWFLAKE_PASSWORD"],
-        database='MINDMAP_DB', warehouse='MINDMAP_WH',
-        schema='PUBLIC'
+        database='MINDMAP_DEV', warehouse='MINDMAP_WH',
+        schema='SILVER'
     )
 
 # parse PDF to search for conclusion
@@ -262,25 +262,25 @@ def transform_to_silver(arxiv_id: str):
                 SELECT 
                     %s as arxiv_id,
                     %s as ss_id,
-                    raw_payload:title::STRING as title,
-                    raw_payload:summary::STRING as abstract,
+                    "raw_payload":title::STRING as title,
+                    "raw_payload":summary::STRING as abstract,
                     %s as conclusion,
                     PARSE_JSON(%s) as reference_list,
                     PARSE_JSON(%s) as citation_list
-                FROM BRONZE_PAPERS
-                WHERE raw_payload:entry_id::STRING LIKE %s
+                FROM "MINDMAP_DEV"."BRONZE"."BRONZE_PAPERS"
+                WHERE "raw_payload":entry_id::STRING LIKE %s
                 LIMIT 1
             ) source
-            ON target.arxiv_id = source.arxiv_id OR (target.ss_id = source.ss_id AND source.ss_id IS NOT NULL)
+            ON target."arxiv_id" = source.arxiv_id OR (target."ss_id" = source.ss_id AND source.ss_id IS NOT NULL)
             WHEN MATCHED THEN
                 UPDATE SET 
-                    target.arxiv_id = COALESCE(target.arxiv_id, source.arxiv_id),
-                    target.ss_id = COALESCE(target.ss_id, source.ss_id),
-                    target.conclusion = source.conclusion,
-                    target.reference_list = source.reference_list,
-                    target.citation_list = source.citation_list
+                    target."arxiv_id" = COALESCE(target."arxiv_id", source.arxiv_id),
+                    target."ss_id" = COALESCE(target."ss_id", source.ss_id),
+                    target."conclusion" = source.conclusion,
+                    target."reference_list" = source.reference_list,
+                    target."citation_list" = source.citation_list
             WHEN NOT MATCHED THEN
-                INSERT (arxiv_id, ss_id, title, abstract, conclusion, reference_list, citation_list)
+                INSERT ("arxiv_id", "ss_id", "title", "abstract", "conclusion", "reference_list", "citation_list")
                 VALUES (source.arxiv_id, source.ss_id, source.title, source.abstract, source.conclusion, source.reference_list, source.citation_list);
         """, (
             arxiv_id,
@@ -310,11 +310,11 @@ def get_bronze_worklist():
     cur = conn.cursor()
     
     # Get all IDs in Bronze
-    cur.execute("SELECT raw_payload:entry_id::STRING FROM BRONZE_PAPERS")
+    cur.execute('SELECT "raw_payload":entry_id::STRING FROM "MINDMAP_DEV"."BRONZE"."BRONZE_PAPERS"')
     rows = cur.fetchall()
     
     # Optional: Filter out papers already in Silver to avoid redundant work
-    cur.execute("SELECT arxiv_id FROM SILVER_PAPERS")
+    cur.execute('SELECT "arxiv_id" FROM "MINDMAP_DEV"."SILVER"."SILVER_PAPERS"')
     existing_ids = {row[0] for row in cur.fetchall()}
     conn.close()
 

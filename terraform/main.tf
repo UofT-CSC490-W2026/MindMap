@@ -149,6 +149,34 @@ resource "snowflake_table" "gold_connections" {
   }
 
 }
+resource "snowflake_table_constraint" "fk_source_paper" {
+  name     = "fk_gold_source_paper"
+  type     = "FOREIGN KEY"
+  # Use fully_qualified_name instead of .id
+  table_id = snowflake_table.gold_connections.fully_qualified_name
+  columns  = ["source_paper_id"]
+  
+  foreign_key_properties {
+    references {
+      table_id = snowflake_table.silver_papers.fully_qualified_name
+      columns  = ["id"]
+    }
+  }
+}
+
+resource "snowflake_table_constraint" "fk_target_paper" {
+  name     = "fk_gold_target_paper"
+  type     = "FOREIGN KEY"
+  table_id = snowflake_table.gold_connections.fully_qualified_name
+  columns  = ["target_paper_id"]
+  
+  foreign_key_properties {
+    references {
+      table_id = snowflake_table.silver_papers.fully_qualified_name
+      columns  = ["id"]
+    }
+  }
+}
 
 # Compute Warehouse
 resource "snowflake_warehouse" "mindmap_wh" {

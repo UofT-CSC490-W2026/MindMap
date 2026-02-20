@@ -17,12 +17,15 @@ image = modal.Image.debian_slim().pip_install("arxiv", "snowflake-connector-pyth
 # --- def make_graph: fetch related / citations papers for query paper
 
 def _connect_to_snowflake():
+    env = "PROD"
+
     return snowflake.connector.connect(
         account=os.environ["SNOWFLAKE_ACCOUNT"],
         user=os.environ["SNOWFLAKE_USER"],
         password=os.environ["SNOWFLAKE_PASSWORD"],
-        database='MINDMAP_DEV', warehouse='MINDMAP_WH',
-        schema='SILVER'
+        database=f"MINDMAP_{env}",
+        warehouse=f"MINDMAP_{env}_WH",
+        schema="SILVER"
     )
 
 # parse PDF to search for conclusion
@@ -267,7 +270,7 @@ def transform_to_silver(arxiv_id: str):
                     %s as conclusion,
                     PARSE_JSON(%s) as reference_list,
                     PARSE_JSON(%s) as citation_list
-                FROM "MINDMAP_DEV"."BRONZE"."BRONZE_PAPERS"
+                FROM "MINDMAP_PROD"."BRONZE"."BRONZE_PAPERS"
                 WHERE "raw_payload":entry_id::STRING LIKE %s
                 LIMIT 1
             ) source
@@ -310,11 +313,11 @@ def get_bronze_worklist():
     cur = conn.cursor()
     
     # Get all IDs in Bronze
-    cur.execute('SELECT "raw_payload":entry_id::STRING FROM "MINDMAP_DEV"."BRONZE"."BRONZE_PAPERS"')
+    cur.execute('SELECT "raw_payload":entry_id::STRING FROM "MINDMAP_PROD"."BRONZE"."BRONZE_PAPERS"')
     rows = cur.fetchall()
     
     # Optional: Filter out papers already in Silver to avoid redundant work
-    cur.execute('SELECT "arxiv_id" FROM "MINDMAP_DEV"."SILVER"."SILVER_PAPERS"')
+    cur.execute('SELECT "arxiv_id" FROM "MINDMAP_PROD"."SILVER"."SILVER_PAPERS"')
     existing_ids = {row[0] for row in cur.fetchall()}
     conn.close()
 

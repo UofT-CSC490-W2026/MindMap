@@ -18,12 +18,15 @@ image = modal.Image.debian_slim().pip_install("arxiv", "snowflake-connector-pyth
 # --- def make_graph: fetch related / citations papers for query paper
 
 def _connect_to_snowflake():
+    env = "PROD"
+
     return snowflake.connector.connect(
         account=os.environ["SNOWFLAKE_ACCOUNT"],
         user=os.environ["SNOWFLAKE_USER"],
         password=os.environ["SNOWFLAKE_PASSWORD"],
-        database='MINDMAP_DEV', warehouse='MINDMAP_WH',
-        schema='BRONZE'
+        database=f"MINDMAP_{env}",
+        warehouse=f"MINDMAP_{env}_WH",
+        schema="BRONZE"
     )
 
 
@@ -62,7 +65,7 @@ def ingest_from_arxiv(query: str, max_results: int = 5):
         
         # 3. Insert into the Bronze Table
         cur.execute(
-            'INSERT INTO "MINDMAP_DEV"."BRONZE"."BRONZE_PAPERS" ("raw_payload") SELECT PARSE_JSON(%s)',
+            'INSERT INTO "MINDMAP_PROD"."BRONZE"."BRONZE_PAPERS" ("raw_payload") SELECT PARSE_JSON(%s)',
             (json_payload,)
         )
 
@@ -84,7 +87,7 @@ def peek_bronze(limit: int = 3):
 
     try:
         # Pull the raw_payload from Snowflake
-        cur.execute('SELECT "raw_payload" FROM "MINDMAP_DEV"."BRONZE"."BRONZE_PAPERS" LIMIT %s', (limit,))
+        cur.execute('SELECT "raw_payload" FROM "MINDMAP_PROD"."BRONZE"."BRONZE_PAPERS" LIMIT %s', (limit,))
         rows = cur.fetchall()
 
         print(f"\n--- BRONZE LAYER PEEK: {len(rows)} PAPERS ---\n")

@@ -131,14 +131,18 @@ resource "snowflake_table" "gold_connections" {
     name = "confidence_score"
     type = "FLOAT"
   }
-}
 
+  column{
+    name = "created_at"
+    type = "TIMESTAMP_NTZ"
+  }
+}
 
 # Compute Warehouse
 resource "snowflake_warehouse" "mindmap_wh" {
-  name               = "MINDMAP_WH"
-  warehouse_size     = "SMALL"       # can be XSMALL, SMALL, MEDIUM, etc.
-  auto_suspend       = 300           # seconds to suspend after inactivity
+  name               = "MINDMAP_${upper(local.env)}_WH"  
+  warehouse_size     = "SMALL"
+  auto_suspend       = 300
   auto_resume        = true
-  initially_suspended = true         # start suspended
+  initially_suspended = true
 }

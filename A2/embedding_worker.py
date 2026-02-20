@@ -43,14 +43,19 @@ def _fetch_unembedded_from_silver(cur, limit: int = 200) -> List[Dict[str, Any]]
     cols = [c[0].lower() for c in cur.description]
     return [dict(zip(cols, r)) for r in rows]
 
-def _update_embeddings(cur, rows, dim: int = 384):
+def _update_embeddings(cur, rows: List[Tuple[int, List[float]]], dim: int = 384):
+    """
+    rows: (id, embedding_list)
+    Writes into a VECTOR(FLOAT, dim) column by:
+      list[float] -> JSON string -> PARSE_JSON -> cast to VECTOR
+    """
     if not rows:
         return
 
     sql = f"""
-    UPDATE MINDMAP_DEV.SILVER.SILVER_PAPERS
-    SET "embedding" = PARSE_JSON(%s)::VECTOR(FLOAT, {dim})
-    WHERE "id" = %s
+    UPDATE MINDMAP_DB.PUBLIC.SILVER_PAPERS
+    SET embedding = PARSE_JSON(?)::VECTOR(FLOAT, {dim})
+    WHERE id = ?
     """
 
     binds = [(json.dumps(emb), int(pid)) for pid, emb in rows]

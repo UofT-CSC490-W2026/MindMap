@@ -1,7 +1,8 @@
-import snowflake.connector
 import os
+from pathlib import Path
+import snowflake.connector
 
-def _connect_to_snowflake():
+def connect_to_snowflake():
     return snowflake.connector.connect(
         account=os.environ["SNOWFLAKE_ACCOUNT"],
         user=os.environ["SNOWFLAKE_USER"],

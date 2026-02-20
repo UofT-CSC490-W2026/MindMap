@@ -6,26 +6,18 @@
 import modal
 from typing import List, Dict, Any
 
-from utils import _connect_to_snowflake
+from utils import connect_to_snowflake
 import json
+from config import app, image, snowflake_secret
 
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .pip_install("snowflake-connector-python[pandas]==3.12.0", "pandas")
-)
-
-app = modal.App("mindmap-ml-workers")
-secret = modal.Secret.from_name("mindmap-1")
-
-
-@app.function(image=image, secrets=[secret], timeout=60 * 5)
+@app.function(image=image, secrets=[snowflake_secret], timeout=60 * 5)
 def get_related_papers(paper_id: int, k: int = 10) -> List[Dict[str, Any]]:
     """
     ONLINE endpoint:
     1) Try cached similar_embddings_ids first
     2) If missing, fallback to vector similarity query
     """
-    conn = _connect_to_snowflake()
+    conn = connect_to_snowflake()
     cur = conn.cursor()
     try:
         # 1) Try cache

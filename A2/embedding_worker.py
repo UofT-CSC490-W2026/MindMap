@@ -1,24 +1,41 @@
 # Offline worker to compute and backfill embeddings for papers in SILVER_PAPERS.
 # Also computes and caches top-k similar paper ids based on embedding similarity.
+import os
 from typing import List, Dict, Any, Tuple, Optional
 import json
 from utils import connect_to_snowflake
 from config import app, ml_image, snowflake_secret
 
+
+import snowflake.connector
+
+def connect_to_snowflake():
+    env = "DEV"
+
+    return snowflake.connector.connect(
+        account=os.environ["SNOWFLAKE_ACCOUNT"],
+        user=os.environ["SNOWFLAKE_USER"],
+        password=os.environ["SNOWFLAKE_PASSWORD"],
+        database=f"MINDMAP_{env}",
+        warehouse=f"MINDMAP_{env}_WH",
+        schema="SILVER"
+    )
+
+
 def _fetch_unembedded_from_silver(cur, limit: int = 200) -> List[Dict[str, Any]]:
     """
-    Fetch papers in MINDMAP_DB.PUBLIC.SILVER_PAPERS that don't have embeddings yet.
+    Fetch papers in MINDMAP_PROD.SILVER.SILVER_PAPERS that don't have embeddings yet.
     We use id (INT identity) as the key.
     """
     cur.execute(
         f"""
         SELECT
-          id,
-          title,
-          abstract
-        FROM MINDMAP_DB.PUBLIC.SILVER_PAPERS
-        WHERE embedding IS NULL
-          AND abstract IS NOT NULL
+          "id",
+          "title",
+          "abstract"
+        FROM "MINDMAP_DEV"."SILVER"."SILVER_PAPERS"
+        WHERE "embedding" IS NULL
+          AND "abstract" IS NOT NULL
         LIMIT {int(limit)}
         """
     )
@@ -31,28 +48,29 @@ def _update_embeddings(cur, rows, dim: int = 384):
         return
 
     sql = f"""
-    UPDATE MINDMAP_DB.PUBLIC.SILVER_PAPERS
-    SET embedding = PARSE_JSON(%s)::VECTOR(FLOAT, {dim})
-    WHERE id = %s
+    UPDATE MINDMAP_DEV.SILVER.SILVER_PAPERS
+    SET "embedding" = PARSE_JSON(%s)::VECTOR(FLOAT, {dim})
+    WHERE "id" = %s
     """
 
     binds = [(json.dumps(emb), int(pid)) for pid, emb in rows]
     cur.executemany(sql, binds)
 
+
 def _compute_topk_in_snowflake(cur, pid: int, k: int) -> List[int]:
     cur.execute(
         """
         WITH q AS (
-          SELECT embedding AS qvec
-          FROM MINDMAP_DB.PUBLIC.SILVER_PAPERS
-          WHERE id = %s
-            AND embedding IS NOT NULL
+          SELECT "embedding" AS qvec
+          FROM "MINDMAP_DEV"."SILVER"."SILVER_PAPERS"
+          WHERE "id" = %s
+            AND "embedding" IS NOT NULL
         )
-        SELECT e.id
-        FROM MINDMAP_DB.PUBLIC.SILVER_PAPERS e, q
-        WHERE e.id <> %s
-          AND e.embedding IS NOT NULL
-        ORDER BY VECTOR_COSINE_SIMILARITY(e.embedding, q.qvec) DESC
+        SELECT e."id"
+        FROM "MINDMAP_DEV"."SILVER"."SILVER_PAPERS" e, q
+        WHERE e."id" <> %s
+          AND e."embedding" IS NOT NULL
+        ORDER BY VECTOR_COSINE_SIMILARITY(e."embedding", q.qvec) DESC
         LIMIT %s
         """,
         (pid, pid, int(k)),
@@ -62,9 +80,9 @@ def _compute_topk_in_snowflake(cur, pid: int, k: int) -> List[int]:
 def _write_similar_ids(cur, pid: int, sim_ids: List[int]):
     cur.execute(
         """
-        UPDATE MINDMAP_DB.PUBLIC.SILVER_PAPERS
-        SET similar_embeddings_ids = PARSE_JSON(%s)
-        WHERE id = %s
+        UPDATE "MINDMAP_DEV"."SILVER"."SILVER_PAPERS"
+        SET "similar_embeddings_ids" = PARSE_JSON(%s)
+        WHERE "id" = %s
         """,
         (json.dumps(sim_ids), int(pid)),
     )
@@ -73,8 +91,8 @@ def _count_embedded_papers(cur) -> int:
     cur.execute(
         """
         SELECT COUNT(*)
-        FROM MINDMAP_DB.PUBLIC.SILVER_PAPERS
-        WHERE embedding IS NOT NULL
+        FROM "MINDMAP_DEV"."SILVER"."SILVER_PAPERS"
+        WHERE "embedding" IS NOT NULL
         """
     )
     return int(cur.fetchone()[0])
@@ -171,10 +189,10 @@ def backfill_similar_ids(limit: int = 200, k: int = 10) -> Dict[str, Any]:
     try:
         cur.execute(
             f"""
-            SELECT id
-            FROM MINDMAP_DB.PUBLIC.SILVER_PAPERS
-            WHERE embedding IS NOT NULL
-              AND similar_embeddings_ids IS NULL
+            SELECT "id"
+            FROM "MINDMAP_DEV"."SILVER"."SILVER_PAPERS"
+            WHERE "embedding" IS NOT NULL
+              AND "similar_embeddings_ids" IS NULL
             LIMIT {int(limit)}
             """
         )
@@ -186,9 +204,9 @@ def backfill_similar_ids(limit: int = 200, k: int = 10) -> Dict[str, Any]:
             sim_ids = _compute_topk_in_snowflake(cur, pid, k)
             cur.execute(
                 """
-                UPDATE MINDMAP_DB.PUBLIC.SILVER_PAPERS
-                SET similar_embeddings_ids = PARSE_JSON(%s)
-                WHERE id = %s
+                UPDATE "MINDMAP_DEV"."SILVER"."SILVER_PAPERS"
+                SET "similar_embeddings_ids" = PARSE_JSON(%s)
+                WHERE "id" = %s
                 """,
                 (json.dumps(sim_ids), int(pid)),
             )

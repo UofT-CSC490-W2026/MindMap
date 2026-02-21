@@ -112,7 +112,7 @@ def run_embedding_batch(
 
     Optional:
     - populate_similar=True will also compute top-k similar paper ids for each embedded paper
-      and store into SILVER_PAPERS.similar_embddings_ids (VARIANT JSON array).
+      and store into SILVER_PAPERS.similar_embeddings_ids (VARIANT JSON array).
     """
     from sentence_transformers import SentenceTransformer
 
@@ -181,7 +181,7 @@ def run_embedding_batch(
 def backfill_similar_ids(limit: int = 200, k: int = 10) -> Dict[str, Any]:
     """
     OFFLINE job:
-    Fill similar_embddings_ids for older papers that already have embeddings
+    Fill similar_embeddings_ids for older papers that already have embeddings
     but do not have cached neighbors yet.
     """
     conn = connect_to_snowflake()

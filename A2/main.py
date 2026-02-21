@@ -48,7 +48,10 @@ def pipeline(
         k=k
     )
     
-    print("Step 4: Building knowledge graph...")
+    print("Step 4: Backfill older papers...")
+    backfill_similar_ids.remote(limit=max_results, k=k)
+    
+    print("Step 5: Building knowledge graph...")
     build_knowledge_graph.remote()
     
     print("✓ Pipeline complete!")

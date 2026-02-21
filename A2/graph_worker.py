@@ -96,6 +96,62 @@ def _merge_similars(cur, source_id: int, similar_ids: Iterable[int]):
         strength = max(0.0, 1.0 - (idx * 0.1))
         print(f"  Merged similar: {sim_id} with strength {strength}")
         _merge_relationship(cur, source_id, sim_id, "SIMILAR", strength)
+        added += cur.rowcount
+    return added
+
+def _normalize_ids(value) -> List[int]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    if isinstance(value, list):
+        ids = []
+        for v in value:
+            try:
+                ids.append(int(v))
+            except (TypeError, ValueError):
+                continue
+        return ids
+    return []
+
+def _chunked(iterable, size: int):
+    it = iter(iterable)
+    while True:
+        chunk = list(islice(it, size))
+        if not chunk:
+            break
+        yield chunk
+
+def _bulk_merge_edges(cur, edges: List[Tuple[int, int, str, float]]) -> int:
+    if not edges:
+        return 0
+
+    total = 0
+    for chunk in _chunked(edges, 500):
+        values_sql = ", ".join(["(%s, %s, %s, %s)"] * len(chunk))
+        flat_params = [p for row in chunk for p in row]
+        cur.execute(
+            f"""
+            MERGE INTO {GOLD} AS target
+            USING (SELECT column1 AS source_paper_id,
+                          column2 AS target_paper_id,
+                          column3 AS relationship_type,
+                          column4 AS strength
+                   FROM VALUES {values_sql}) AS source
+            ON target.source_paper_id = source.source_paper_id
+               AND target.target_paper_id = source.target_paper_id
+               AND target.relationship_type = source.relationship_type
+            WHEN NOT MATCHED THEN
+                INSERT (source_paper_id, target_paper_id, relationship_type, strength)
+                VALUES (source.source_paper_id, source.target_paper_id, source.relationship_type, source.strength)
+            """,
+            flat_params,
+        )
+        total += cur.rowcount
+    return total
 
 # -----------------------------
 # NEW FUNCTION: Hardcode some papers into SILVER for testing
@@ -135,6 +191,8 @@ def build_knowledge_graph(paper_id: int = None):
         _insert_hardcoded_test_papers(cur)
 
         papers = _fetch_papers(cur, paper_id)
+        edges = []
+
         for pid, citations, similar_ids in papers:
             print(f"Processing paper {pid}...")
             if citations and isinstance(citations, str):
@@ -148,7 +206,7 @@ def build_knowledge_graph(paper_id: int = None):
             if similar_ids:
                 _merge_similars(cur, pid, similar_ids)
         conn.commit()
-        print(f"Built knowledge graph for {len(papers)} papers")
+        print(f"Built knowledge graph for {len(papers)} papers, edges added: {added}")
     finally:
         cur.close()
         conn.close()

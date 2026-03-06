@@ -125,13 +125,13 @@ class MLP(nn.Module):
         self.mlp_type = config.mlp_type
 
         if self.mlp_type == "relu2":
-            self.c_fc = F.Linear(config.n_embd, 4 * config.n_embd, bias=False)
-            self.c_proj = F.Linear(4 * config.n_embd, config.n_embd, bias=False)
+            self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
+            self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
 
         elif self.mlp_type == "swiglu":
             # project to 8d, then split into two 4d chunks
-            self.c_fc = F.Linear(config.n_embd, 8 * config.n_embd, bias=False)
-            self.c_proj = F.Linear(4 * config.n_embd, config.n_embd, bias=False)
+            self.c_fc = nn.Linear(config.n_embd, 8 * config.n_embd, bias=False)
+            self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
 
         else:
             raise ValueError(f"Unsupported mlp_type: {self.mlp_type}")

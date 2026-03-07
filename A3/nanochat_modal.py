@@ -670,8 +670,8 @@ def main(run_type: str) -> None:
         stage_pretrain.remote(
             depth=DEPTH,
             device_batch_size=DEVICE_BATCH_SIZE,
-            wandb_run="pico_d4_baseline",
-            model_tag="pico_d4_baseline",
+            wandb_run="pico_d10_baseline",
+            model_tag="pico_d10_baseline",
             kv_ratio=1,
             mlp_type="relu2",
         )   
@@ -681,8 +681,8 @@ def main(run_type: str) -> None:
         stage_pretrain.remote(
             depth=DEPTH,
             device_batch_size=DEVICE_BATCH_SIZE,
-            wandb_run="pico_d4_gqa4",
-            model_tag="pico_d4_gqa4",
+            wandb_run="pico_d10_gqa4",
+            model_tag="pico_d10_gqa4",
             kv_ratio=4,
             mlp_type="relu2",
     )

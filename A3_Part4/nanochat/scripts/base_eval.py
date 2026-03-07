@@ -71,7 +71,7 @@ def load_hf_model(hf_path: str, device):
     print0(f"Loading HuggingFace model from: {hf_path}")
     from transformers import AutoModelForCausalLM
     model = AutoModelForCausalLM.from_pretrained(hf_path)
-    model.to(device)
+    model.to(device) 
     model.eval()
     max_seq_len = 1024 if "gpt2" in hf_path else None
     model = ModelWrapper(model, max_seq_len=max_seq_len)
@@ -174,6 +174,31 @@ def evaluate_core(model, tokenizer, device, max_per_task=-1):
     }
     return out
 
+
+##### Part 3
+def evaluate_next_token_accuracy(model, loader, steps):
+    correct = 0
+    total = 0
+
+    for i, (x, y) in enumerate(loader):
+        if i >= steps:
+            break
+
+        with torch.no_grad():
+            logits = model(x)
+
+        preds = torch.argmax(logits, dim=-1)
+
+        mask = y != -1
+        correct += ((preds == y) & mask).sum().item()
+        total += mask.sum().item()
+
+    return correct / total
+
+
+
+#####
+
 # -----------------------------------------------------------------------------
 # Main
 
@@ -187,11 +212,25 @@ def main():
     parser.add_argument('--device-batch-size', type=int, default=32, help='Per-device batch size for BPB evaluation')
     parser.add_argument('--split-tokens', type=int, default=40*524288, help='Number of tokens to evaluate per split for BPB')
     parser.add_argument('--device-type', type=str, default='', help='cuda|cpu|mps (empty = autodetect)')
+    parser.add_argument(####. Part 3
+        '--context-lengths',
+        type=str,
+        default="512,1024,2048",
+        help="Comma-separated context lengths for next-token evaluation"
+    )
+
+    parser.add_argument(
+        '--nexttok-steps',
+        type=int,
+        default=200,
+        help="Number of batches for next-token accuracy evaluation"
+    )####
+
     args = parser.parse_args()
 
     # Parse evaluation modes
     eval_modes = set(mode.strip() for mode in args.eval.split(','))
-    valid_modes = {'core', 'bpb', 'sample'}
+    valid_modes = {'core', 'bpb', 'sample', 'nexttok'}
     invalid = eval_modes - valid_modes
     if invalid:
         parser.error(f"Invalid eval modes: {invalid}. Valid: {valid_modes}")
@@ -305,6 +344,41 @@ def main():
             print0(f"\nResults written to: {output_csv_path}")
             print0(f"CORE metric: {core_results['core_metric']:.4f}")
 
+    # --- Next Token Accuracy evaluation ---  Part 3
+    if 'nexttok' in eval_modes:
+
+        print0("\n" + "="*80)
+        print0("Next Token Accuracy Evaluation")
+        print0("="*80)
+
+        context_lengths = [int(x) for x in args.context_lengths.split(",")]
+
+        nexttok_results = {}
+
+        for seq_len in context_lengths:
+
+            print0(f"Evaluating context length: {seq_len}")
+
+            loader = tokenizing_distributed_data_loader_bos_bestfit(
+                tokenizer,
+                args.device_batch_size,
+                seq_len,
+                "val",
+                device=device
+            )
+
+            with autocast_ctx:
+                acc = evaluate_next_token_accuracy(
+                    model,
+                    loader,
+                    args.nexttok_steps
+                )
+
+            nexttok_results[seq_len] = acc
+
+            print0(f"context {seq_len}: accuracy {acc:.4f}")
+  #####
+
     # --- Log to report ---
     from nanochat.report import get_report
     report_data = [{"model": model_name}]
@@ -321,6 +395,11 @@ def main():
         report_data.append({f"sample {i}": s for i, s in enumerate(samples)})
     if unconditioned_samples:
         report_data.append({f"unconditioned {i}": s for i, s in enumerate(unconditioned_samples)})
+
+    if 'nexttok' in eval_modes and ddp_rank == 0:
+        print0("\nNext-token accuracy results:")
+        for ctx, acc in nexttok_results.items():
+            print0(f"{ctx}: {acc:.4f}")
 
     get_report().log(section="Base model evaluation", data=report_data)
 

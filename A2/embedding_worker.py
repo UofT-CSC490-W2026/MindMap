@@ -48,14 +48,24 @@ def _update_embeddings(cur, rows, dim: int = 384):
         return
 
     sql = f"""
+<<<<<<< HEAD
     UPDATE MINDMAP_DB.PUBLIC.SILVER_PAPERS
     SET embedding = PARSE_JSON(%s)::VECTOR(FLOAT, {dim})
     WHERE id = %s
+=======
+    UPDATE MINDMAP_DEV.SILVER.SILVER_PAPERS
+    SET "embedding" = PARSE_JSON(%s)::VECTOR(FLOAT, {dim})
+    WHERE "id" = %s
+>>>>>>> b8536ef685afebd4d49b86b15562f5b80fd694a6
     """
 
     binds = [(json.dumps(emb), int(pid)) for pid, emb in rows]
     cur.executemany(sql, binds)
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> b8536ef685afebd4d49b86b15562f5b80fd694a6
 def _compute_topk_in_snowflake(cur, pid: int, k: int) -> List[int]:
     cur.execute(
         """
@@ -79,9 +89,15 @@ def _compute_topk_in_snowflake(cur, pid: int, k: int) -> List[int]:
 def _write_similar_ids(cur, pid: int, sim_ids: List[int]):
     cur.execute(
         """
+<<<<<<< HEAD
         UPDATE MINDMAP_DB.PUBLIC.SILVER_PAPERS
         SET similar_embeddings_ids = PARSE_JSON(%s)
         WHERE id = %s
+=======
+        UPDATE "MINDMAP_DEV"."SILVER"."SILVER_PAPERS"
+        SET "similar_embeddings_ids" = PARSE_JSON(%s)
+        WHERE "id" = %s
+>>>>>>> b8536ef685afebd4d49b86b15562f5b80fd694a6
         """,
         (json.dumps(sim_ids), int(pid)),
     )
@@ -188,10 +204,17 @@ def backfill_similar_ids(limit: int = 200, k: int = 10) -> Dict[str, Any]:
     try:
         cur.execute(
             f"""
+<<<<<<< HEAD
             SELECT id
             FROM MINDMAP_DB.PUBLIC.SILVER_PAPERS
             WHERE embedding IS NOT NULL
               AND similar_embeddings_ids IS NULL
+=======
+            SELECT "id"
+            FROM "MINDMAP_DEV"."SILVER"."SILVER_PAPERS"
+            WHERE "embedding" IS NOT NULL
+              AND "similar_embeddings_ids" IS NULL
+>>>>>>> b8536ef685afebd4d49b86b15562f5b80fd694a6
             LIMIT {int(limit)}
             """
         )
@@ -203,9 +226,15 @@ def backfill_similar_ids(limit: int = 200, k: int = 10) -> Dict[str, Any]:
             sim_ids = _compute_topk_in_snowflake(cur, pid, k)
             cur.execute(
                 """
+<<<<<<< HEAD
                 UPDATE MINDMAP_DB.PUBLIC.SILVER_PAPERS
                 SET similar_embeddings_ids = PARSE_JSON(%s)
                 WHERE id = %s
+=======
+                UPDATE "MINDMAP_DEV"."SILVER"."SILVER_PAPERS"
+                SET "similar_embeddings_ids" = PARSE_JSON(%s)
+                WHERE "id" = %s
+>>>>>>> b8536ef685afebd4d49b86b15562f5b80fd694a6
                 """,
                 (json.dumps(sim_ids), int(pid)),
             )

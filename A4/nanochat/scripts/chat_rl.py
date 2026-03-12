@@ -57,6 +57,9 @@ parser.add_argument("--init-lr-frac", type=float, default=0.05, help="initial LR
 parser.add_argument("--eval-every", type=int, default=60, help="evaluate pass@k every N steps")
 parser.add_argument("--eval-examples", type=int, default=400, help="number of examples for pass@k evaluation")
 parser.add_argument("--save-every", type=int, default=60, help="save checkpoint every N steps")
+parser.add_argument("--reward-mode", type=str, default="baseline", 
+                    choices=["baseline", "format", "reasoning", "combined"],
+                    help="Which reward system to use for this run")
 args = parser.parse_args()
 user_config = vars(args).copy()
 # -----------------------------------------------------------------------------
@@ -122,8 +125,22 @@ def get_batch():
             # Decode the generated response
             generated_text = tokenizer.decode(generated_tokens)
             # Calculate the reward
-            reward = train_task.reward(conversation, generated_text)
-            rewards.append(reward)
+            # reward = train_task.reward(conversation, generated_text)
+            # rewards.append(reward)
+            base_reward = train_task.reward(conversation, generated_text) # 1.0 or 0.0
+            total_reward = float(base_reward)
+
+            # Environment 1: Reward correct formatting
+            if args.reward_mode == "format" or args.reward_mode == "combined":
+                if "####" in generated_text:
+                    total_reward += 0.2  # Additive signal
+
+            # Environment 2: Reward reasoning steps
+            if args.reward_mode == "reasoning" or args.reward_mode == "combined":
+                # Pattern: More newlines often correlates with step-by-step reasoning
+                if generated_text.count('\n') >= 3:
+                    total_reward += 0.1
+            rewards.append(total_reward)
 
         # Pad the sequences so that their lengths (in time) match
         max_length = max(len(seq) for seq in generated_token_sequences)

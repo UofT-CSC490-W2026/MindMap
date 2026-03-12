@@ -42,12 +42,12 @@ from modal import App, Image as ModalImage, Volume, Secret
 #   d24  ~768M params   3 hr on 8xH100     
 #   d26  ~1B params     6 hr on 8xH100 
 #   d32  ~1.9B params   41 hr on 8xH100
-DEPTH = 20
+DEPTH = 12
 
 # ── Data shards ───────────────────────────────────────────────────────────────
 # FineWeb-EDU is split into 1822 parquet shards, each ~250M chars / ~100MB.
 # 240 shards is enough for d24. Use 450 for d26 and 800 for d32.
-NUM_SHARDS = 240
+NUM_SHARDS = 8
 
 # ── GPU configuration ─────────────────────────────────────────────────────────
 # "H100:8" = 8 H100s, the reference configuration for the speedrun leaderboard.
@@ -69,8 +69,8 @@ DEVICE_BATCH_SIZE = 16    # d24 at 16 is safe; 32 may OOM on some H100 configs
 
 # ── WandB ─────────────────────────────────────────────────────────────────────
 # Set to "dummy" to disable WandB logging
-WANDB_RUN = "dummy"
-
+# WANDB_RUN = "dummy"
+WANDB_RUN = "nanochat-part4-rl"
 # ── Volume mount path ──────────────────────────────────────────────────────────
 # All cached data (shards, tokenizer, checkpoints, eval bundle) lives here
 # inside the Modal Volume. nanochat defaults to ~/.cache/nanochat; symlink
@@ -486,8 +486,8 @@ def stage_sft(wandb_run: str = WANDB_RUN) -> None:
         "scripts.chat_sft",
         [
             f"--run={wandb_run}",
-            "--model-step=4357",
-            "--model-tag=d20"
+            "--model-step=2205",
+            "--model-tag=d12"
         ],
         nproc=_N_FINETUNE_GPUS,
     )
@@ -515,7 +515,7 @@ def stage_sft(wandb_run: str = WANDB_RUN) -> None:
     gpu=GPU_FINETUNE,
     timeout=FINETUNE_TIMEOUT_SEC,
 )
-def stage_rl(wandb_run: str = WANDB_RUN) -> None:
+def stage_rl(wandb_run: str = WANDB_RUN, reward_mode: str = "baseline") -> None:
     """
     Optional RL stage to boost math reasoning on GSM8K.
 
@@ -541,12 +541,14 @@ def stage_rl(wandb_run: str = WANDB_RUN) -> None:
 
     print("Running RL (GRPO on GSM8K)...")
     # speedrun.sh: torchrun ... -m scripts.chat_rl -- --run=$WANDB_RUN
+    modeltag = f"d{DEPTH}"
     _torchrun(
         "scripts.chat_rl",
         [
             f"--run={wandb_run}",
-            "--model-step=4357",
-            "--model-tag=d20"
+            "--model-step=2205",
+            f"--model-tag={modeltag}",
+            f"--reward-mode={reward_mode}",
         ],
         nproc=_N_FINETUNE_GPUS,
     )
@@ -595,24 +597,24 @@ def main() -> None:
 
     # Stage 0: Data
     # speedrun.sh: python -m nanochat.dataset -n 240
-    print("[0/5] Downloading FineWeb-EDU shards...")
-    stage_data.remote(num_shards=NUM_SHARDS)
+    # print("[0/5] Downloading FineWeb-EDU shards...")
+    # stage_data.remote(num_shards=NUM_SHARDS)
 
-    # Stage 1: Tokenizer
-    # speedrun.sh: python -m scripts.tok_train && python -m scripts.tok_eval
-    print("[1/5] Training tokenizer...")
-    stage_tokenizer.remote()
+    # # Stage 1: Tokenizer
+    # # speedrun.sh: python -m scripts.tok_train && python -m scripts.tok_eval
+    # print("[1/5] Training tokenizer...")
+    # stage_tokenizer.remote()
 
-    # Stage 2: Pretrain
-    # speedrun.sh: python -m nanochat.report reset
-    #              torchrun ... -m scripts.base_train -- --depth=24 ...
-    print("[2/5] Pretraining base model (the long one)...")
-    stage_pretrain.remote(depth=DEPTH, device_batch_size=DEVICE_BATCH_SIZE, wandb_run=WANDB_RUN)
+    # # Stage 2: Pretrain
+    # # speedrun.sh: python -m nanochat.report reset
+    # #              torchrun ... -m scripts.base_train -- --depth=24 ...
+    # print("[2/5] Pretraining base model (the long one)...")
+    # stage_pretrain.remote(depth=DEPTH, device_batch_size=DEVICE_BATCH_SIZE, wandb_run=WANDB_RUN)
 
     # Stage 3: Post-pretrain eval
     #              torchrun ... -m scripts.base_eval
-    print("[3/5] Evaluating base model (bits-per-byte + CORE)...")
-    stage_post_pretrain_eval.remote()
+    # print("[3/5] Evaluating base model (bits-per-byte + CORE)...")
+    # stage_post_pretrain_eval.remote()
 
     # Stage 4: SFT + eval
     # speedrun.sh: curl identity_conversations.jsonl
@@ -627,6 +629,30 @@ def main() -> None:
     print("  Optional RL stage: modal run nanochat_modal.py::stage_rl")
     print("=" * w + "\n")
 
+    # Run 1: Baseline RL (The control group)
+    w = 64
+    print("\n" + "=" * w)
+    print("nanochat Part 4: RL Reward Ablations")
+    print("=" * w + "\n")
+    print("\n>>> Launching Run #1: Baseline RL")
+    stage_rl.remote(wandb_run=f"{WANDB_RUN}-baseline", reward_mode="baseline")
+
+    # Run 2: Format Reward Environment
+    print("\n>>> Launching Run #2: Format Reward")
+    stage_rl.remote(wandb_run=f"{WANDB_RUN}-format-bonus", reward_mode="format")
+
+    # Run 3: Reasoning Reward Environment
+    print("\n>>> Launching Run #3: Reasoning Reward")
+    stage_rl.remote(wandb_run=f"{WANDB_RUN}-reasoning-bonus", reward_mode="reasoning")
+
+    # Run 4: Combined Reward Environment
+    print("\n>>> Launching Run #4: Combined Rewards")
+    stage_rl.remote(wandb_run=f"{WANDB_RUN}-combined-all", reward_mode="combined")
+
+    print("\n" + "=" * w)
+    print("Part 4 Ablations Complete!")
+    print("Check Weights & Biases for the comparison plots.")
+    print("=" * w + "\n")
 
 # =============================================================================
 # QUICK TEST

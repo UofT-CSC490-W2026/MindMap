@@ -125,29 +125,12 @@ def get_batch():
             generated_tokens = sample_tokens[prefix_length:]
             # Decode the generated response
             generated_text = tokenizer.decode(generated_tokens)
-            # Calculate the reward
-            # reward = train_task.reward(conversation, generated_text)
-            # rewards.append(reward)
 
-            # --- (ATTEMPT 1 - not working)
+            # Calculate the reward (Changed!)
             base_reward = train_task.reward(conversation, generated_text) # 1.0 or 0.0
             total_reward = float(base_reward)
 
-            # Environment 1: Reward correct formatting
-            # if args.reward_mode == "format" or args.reward_mode == "combined":
-            #     if "####" in generated_text:
-            #         total_reward += 0.2  # Additive signal
-
-            # # Environment 2: Reward reasoning steps
-            # if args.reward_mode == "reasoning" or args.reward_mode == "combined":
-            #     # Pattern: More newlines often correlates with step-by-step reasoning
-            #     if generated_text.count('\n') >= 3:
-            #         total_reward += 0.1
-
-            # ----- (ATTEMPT 2 - Attempt 1 had 0 reward, wasn't very effective)
-            # prbly cause all the answers have the same, just base reward?
-            # try adding small reward for even attempting, and scaling reward
-            # instead of binary
+            # --- REWARD 1: FORMAT BONUS ---
             if args.reward_mode in ["format", "combined"]:
                 # Reward finding the answer box
                 if "####" in generated_text:
@@ -155,19 +138,43 @@ def get_batch():
                 # Penalty if the model is too short (likely didn't try to reason)
                 if len(generated_text) < 50:
                     total_reward -= 0.2
-            if master_process and step % 1 == 0:
-                print(f"\n--- STEP {step} DEBUG ---")
-                print(f"Base Reward: {base_reward}")
-                print(f"Total Reward: {total_reward}")
-                print(f" format_bonus: {0.4 if '####' in generated_text else 0.0}")
-                print(f" reasoning_bonus: {min(steps * 0.05, 0.3) if args.reward_mode in ['reasoning', 'combined'] else 0.0}")
-                # Optional: see the text to understand why the reward is 0
-                print(f"Sample Text: {generated_text}")
+
+            # --- REWARD 2: MULTI-STEP REASONING ---
             if args.reward_mode in ["reasoning", "combined"]:
-                # Reward "Step" markers like "Step 1" or "1." or newlines
-                steps = generated_text.count('\n') + generated_text.count('Step')
-                total_reward += min(steps * 0.05, 0.3)
+                # A) Operator Density: Reward actual math symbols (+, -, *, /, =)
+                # This addresses the "Calculator but not Thinker" gap from Part 3.
+                operators = sum(generated_text.count(op) for op in ['+', '-', '*', '/', '='])
+                # We give +0.04 per operator, capped at 0.2 to prevent "operator stuffing."
+                operator_bonus = min(operators * 0.04, 0.2)
+                total_reward += operator_bonus
+
+                # B) Reasoning Steps: Look for structural markers
+                # This addresses the "0% Multi-step accuracy" from Part 3.
+                reasoning_markers = ["Step", "First", "Then", "Finally", "Therefore", "Because"]
+                marker_count = sum(1 for m in reasoning_markers if m in generated_text)
+                # Give a small boost for organized thinking
+                total_reward += min(marker_count * 0.05, 0.1)
+                
+                # C) Newline Density
+                # Multiple steps usually mean multiple lines.
+                if generated_text.count('\n') >= 3:
+                    total_reward += 0.05
+
+            # add reward
             rewards.append(total_reward)
+
+            # (for debugging, set to true if you want to see the reward breakdown and sample generations during training. 
+            # Can be helpful to understand why the reward is 0 for many samples at the beginning)
+            DEBUG = False # change to True to enable debug printing
+            if DEBUG:
+                if master_process and step % 1 == 0:
+                    print(f"\n--- STEP {step} DEBUG ---")
+                    print(f"Base Reward: {base_reward}")
+                    print(f"Total Reward: {total_reward}")
+                    print(f" format_bonus: {0.4 if '####' in generated_text else 0.0}")
+                    print(f" reasoning_bonus: {min(steps * 0.05, 0.3) if args.reward_mode in ['reasoning', 'combined'] else 0.0}")
+                    # Optional: see the text to understand why the reward is 0
+                    print(f"Sample Text: {generated_text}")
 
         # Pad the sequences so that their lengths (in time) match
         max_length = max(len(seq) for seq in generated_token_sequences)

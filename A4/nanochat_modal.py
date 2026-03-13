@@ -641,9 +641,9 @@ def main() -> None:
     start_time = time.time()
 
     # Run 2: Format Reward Environment
-    print("\n>>> Launching Run #2: Format Reward")
-    stage_rl.remote(wandb_run=f"{WANDB_RUN}-format-bonus", reward_mode="format")
-    print(f"Run #2 launched. Elapsed time: {(time.time() - start_time) / 60:.2f} min")
+    # print("\n>>> Launching Run #2: Format Reward")
+    # stage_rl.remote(wandb_run=f"{WANDB_RUN}-format-bonus", reward_mode="format")
+    # print(f"Run #2 launched. Elapsed time: {(time.time() - start_time) / 60:.2f} min")
 
     # Run 3: Reasoning Reward Environment
     print("\n>>> Launching Run #3: Reasoning Reward")

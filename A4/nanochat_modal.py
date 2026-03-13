@@ -180,7 +180,7 @@ image = (
         "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> $HOME/.bashrc",
         "bash -c 'source $HOME/.cargo/env'",
     )
-    .pip_install("uv")
+    .pip_install("uv", "torch", "datasets", "tokenizers")
     .env({
         "OMP_NUM_THREADS": "1",
         "NANOCHAT_BASE_DIR": "/data/.cache/nanochat",
@@ -782,3 +782,90 @@ def quick_test() -> None:
 
     volume.commit()
     print("\nQuick test passed! Ready for the full speedrun.")
+
+@app.function(
+    image=image,
+    secrets=[secret],
+    volumes={VOLUME_MOUNT: volume},
+    gpu=GPU_FINETUNE,
+    timeout=FINETUNE_TIMEOUT_SEC,
+)
+def eval_sft() -> None:
+    _setup_cache()
+    _torchrun(
+        "scripts.chat_eval",
+        [
+            "-i", "sft",
+            "-g", "nano_final_d4_swiglu",
+            "-s", "483",
+            "-a", "GSM8K",
+            "-n", "1",
+            "-t", "0.0",
+            "-m", "512",
+        ],
+        nproc=_N_FINETUNE_GPUS,
+    )
+
+@app.function(
+    image=image,
+    secrets=[secret],
+    volumes={VOLUME_MOUNT: volume},
+    gpu=GPU_FINETUNE,
+    timeout=FINETUNE_TIMEOUT_SEC,
+)
+def chat_cli(
+    source: str = "sft",
+    model_tag: str = "nano_final_d4_swiglu",
+    step: int = 483,
+    prompt: str = "",
+    temperature: float = 0.6,
+    top_k: int = 50,
+    dtype: str = "bfloat16",
+) -> None:
+    _setup_cache()
+
+    cmd = (
+        "cd /root/repo && "
+        "uv run python -m scripts.chat_cli "
+        f"--source {source} "
+        f"--model-tag {model_tag} "
+        f"--step {step} "
+        f"--temperature {temperature} "
+        f"--top-k {top_k} "
+        f"--dtype {dtype} "
+    )
+
+    if prompt:
+        escaped_prompt = prompt.replace('"', '\\"')
+        cmd += f'--prompt "{escaped_prompt}"'
+
+    _run(cmd)
+
+@app.function(
+    image=image,
+    secrets=[secret],
+    volumes={VOLUME_MOUNT: volume},
+    gpu=GPU_FINETUNE,
+    timeout=FINETUNE_TIMEOUT_SEC,
+)
+def eval_gsm8k(
+    source: str = "sft",
+    model_tag: str = "nano_final_d4_swiglu",
+    step: int = 483,
+    num_examples: int = 30,
+    max_tokens: int = 128,
+    temperature: float = 0.0,
+    top_k: int = 50,
+) -> None:
+    _setup_cache()
+    _run(
+        "cd /root/repo && "
+        "uv run python -m scripts.eval_gsm8k "
+        f"--source {source} "
+        f"--model-tag {model_tag} "
+        f"--step {step} "
+        f"--num-examples {num_examples} "
+        f"--max-tokens {max_tokens} "
+        f"--temperature {temperature} "
+        f"--top-k {top_k}"
+    )

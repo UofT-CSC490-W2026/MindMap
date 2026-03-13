@@ -31,6 +31,7 @@ import os
 import subprocess
 import modal
 from modal import App, Image as ModalImage, Volume, Secret
+import time
 
 # =============================================================================
 # CONFIGURATION
@@ -42,7 +43,7 @@ from modal import App, Image as ModalImage, Volume, Secret
 #   d24  ~768M params   3 hr on 8xH100     
 #   d26  ~1B params     6 hr on 8xH100 
 #   d32  ~1.9B params   41 hr on 8xH100
-DEPTH = 12
+DEPTH = 20
 
 # ── Data shards ───────────────────────────────────────────────────────────────
 # FineWeb-EDU is split into 1822 parquet shards, each ~250M chars / ~100MB.
@@ -55,7 +56,7 @@ NUM_SHARDS = 8
 # "A100:8" = 8 A100 80GBs, ~10-20% slower than H100s but sometimes cheaper.
 # Single GPU works too — code auto-compensates with gradient accumulation.
 GPU_PRETRAIN = "H100:8"
-GPU_FINETUNE = "H100:4"   # SFT and RL don't need all 8 GPUs
+GPU_FINETUNE = "H100:8"   # SFT and RL don't need all 8 GPUs
 
 # ── Device batch size ─────────────────────────────────────────────────────────
 # Sequences per GPU per forward pass. Reduce if you hit OOM.
@@ -541,12 +542,14 @@ def stage_rl(wandb_run: str = WANDB_RUN, reward_mode: str = "baseline") -> None:
 
     print("Running RL (GRPO on GSM8K)...")
     # speedrun.sh: torchrun ... -m scripts.chat_rl -- --run=$WANDB_RUN
-    modeltag = f"d{DEPTH}"
+    # modeltag = f"d{DEPTH}"
+    modelstep = 483
+    modeltag = "nano_final_d4_swiglu"
     _torchrun(
         "scripts.chat_rl",
         [
             f"--run={wandb_run}",
-            "--model-step=2205",
+            f"--model-step={modelstep}",
             f"--model-tag={modeltag}",
             f"--reward-mode={reward_mode}",
         ],
@@ -620,34 +623,42 @@ def main() -> None:
     # speedrun.sh: curl identity_conversations.jsonl
     #              torchrun ... -m scripts.chat_sft -- --run=...
     #              torchrun ... -m scripts.chat_eval -- -i sft
-    print("[4/5] Supervised fine-tuning + eval...")
-    stage_sft.remote(wandb_run=WANDB_RUN)
+    # print("[4/5] Supervised fine-tuning + eval...")
+    # stage_sft.remote(wandb_run=WANDB_RUN)
 
-    print("\n" + "=" * w)
-    print("Speedrun complete!")
-    print("  Checkpoints + report are in the 'nanochat-vol' Modal Volume.")
-    print("  Optional RL stage: modal run nanochat_modal.py::stage_rl")
-    print("=" * w + "\n")
+    # print("\n" + "=" * w)
+    # print("Speedrun complete!")
+    # print("  Checkpoints + report are in the 'nanochat-vol' Modal Volume.")
+    # print("  Optional RL stage: modal run nanochat_modal.py::stage_rl")
+    # print("=" * w + "\n")
 
     # Run 1: Baseline RL (The control group)
     w = 64
     print("\n" + "=" * w)
     print("nanochat Part 4: RL Reward Ablations")
     print("=" * w + "\n")
-    print("\n>>> Launching Run #1: Baseline RL")
-    stage_rl.remote(wandb_run=f"{WANDB_RUN}-baseline", reward_mode="baseline")
+
+    start_time = time.time()
 
     # Run 2: Format Reward Environment
     print("\n>>> Launching Run #2: Format Reward")
     stage_rl.remote(wandb_run=f"{WANDB_RUN}-format-bonus", reward_mode="format")
+    print(f"Run #2 launched. Elapsed time: {(time.time() - start_time) / 60:.2f} min")
 
     # Run 3: Reasoning Reward Environment
     print("\n>>> Launching Run #3: Reasoning Reward")
     stage_rl.remote(wandb_run=f"{WANDB_RUN}-reasoning-bonus", reward_mode="reasoning")
+    print(f"Run #3 launched. Elapsed time: {(time.time() - start_time) / 60:.2f} min")
 
     # Run 4: Combined Reward Environment
     print("\n>>> Launching Run #4: Combined Rewards")
     stage_rl.remote(wandb_run=f"{WANDB_RUN}-combined-all", reward_mode="combined")
+    print(f"Run #4 launched. Elapsed time: {(time.time() - start_time) / 60:.2f} min")
+
+    print("\n>>> Launching Run #1: Baseline RL")
+    stage_rl.remote(wandb_run=f"{WANDB_RUN}-baseline", reward_mode="baseline")
+    print(f"Run #1 launched. Elapsed time: {(time.time() - start_time) / 60:.2f} min")
+    print("\nAll RL runs launched. Monitor progress and compare results in Weights & Biases.")
 
     print("\n" + "=" * w)
     print("Part 4 Ablations Complete!")

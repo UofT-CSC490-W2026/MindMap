@@ -75,6 +75,7 @@ wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat-rl
 
 # Init model and tokenizer
 model, tokenizer, meta = load_model("sft", device, phase="eval", model_tag=args.model_tag, step=args.model_step)
+model.to(dtype=torch.bfloat16)
 engine = Engine(model, tokenizer) # for sampling rollouts
 
 # -----------------------------------------------------------------------------
@@ -127,19 +128,45 @@ def get_batch():
             # Calculate the reward
             # reward = train_task.reward(conversation, generated_text)
             # rewards.append(reward)
+
+            # --- (ATTEMPT 1 - not working)
             base_reward = train_task.reward(conversation, generated_text) # 1.0 or 0.0
             total_reward = float(base_reward)
 
             # Environment 1: Reward correct formatting
-            if args.reward_mode == "format" or args.reward_mode == "combined":
-                if "####" in generated_text:
-                    total_reward += 0.2  # Additive signal
+            # if args.reward_mode == "format" or args.reward_mode == "combined":
+            #     if "####" in generated_text:
+            #         total_reward += 0.2  # Additive signal
 
-            # Environment 2: Reward reasoning steps
-            if args.reward_mode == "reasoning" or args.reward_mode == "combined":
-                # Pattern: More newlines often correlates with step-by-step reasoning
-                if generated_text.count('\n') >= 3:
-                    total_reward += 0.1
+            # # Environment 2: Reward reasoning steps
+            # if args.reward_mode == "reasoning" or args.reward_mode == "combined":
+            #     # Pattern: More newlines often correlates with step-by-step reasoning
+            #     if generated_text.count('\n') >= 3:
+            #         total_reward += 0.1
+
+            # ----- (ATTEMPT 2 - Attempt 1 had 0 reward, wasn't very effective)
+            # prbly cause all the answers have the same, just base reward?
+            # try adding small reward for even attempting, and scaling reward
+            # instead of binary
+            if args.reward_mode in ["format", "combined"]:
+                # Reward finding the answer box
+                if "####" in generated_text:
+                    total_reward += 0.4 
+                # Penalty if the model is too short (likely didn't try to reason)
+                if len(generated_text) < 50:
+                    total_reward -= 0.2
+            if master_process and step % 1 == 0:
+                print(f"\n--- STEP {step} DEBUG ---")
+                print(f"Base Reward: {base_reward}")
+                print(f"Total Reward: {total_reward}")
+                print(f" format_bonus: {0.4 if '####' in generated_text else 0.0}")
+                print(f" reasoning_bonus: {min(steps * 0.05, 0.3) if args.reward_mode in ['reasoning', 'combined'] else 0.0}")
+                # Optional: see the text to understand why the reward is 0
+                print(f"Sample Text: {generated_text}")
+            if args.reward_mode in ["reasoning", "combined"]:
+                # Reward "Step" markers like "Step 1" or "1." or newlines
+                steps = generated_text.count('\n') + generated_text.count('Step')
+                total_reward += min(steps * 0.05, 0.3)
             rewards.append(total_reward)
 
         # Pad the sequences so that their lengths (in time) match

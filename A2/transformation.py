@@ -1,32 +1,27 @@
-
-import modal
-import snowflake.connector
 import os
 import re
+import snowflake.connector
+from config import app, image, snowflake_secret
+#from utils import connect_to_snowflake
 
-# Infrastructure Definition (Part 4)
-app = modal.App("mindmap-pipeline")
-image = modal.Image.debian_slim().pip_install("arxiv", "snowflake-connector-python", "httpx", "pymupdf")
 
 
-# some ideas:
-# --- def get_conclusion: parse the PDF, read, get conclusion
-# --- def get_embedding: how to use embedding model on Modal, generate embedding for the abstract, conclusion (so we can use semantic search later on)
-# --- def get_citations: get the papers that were cited
-# --- def get_related_papers: use the embedding to find related papers in the Silver layer, return top 5 related papers (title, abstract, link to PDF)
-# --- def make_graph: fetch related / citations papers for query paper
+def connect_to_snowflake():
+    env = "PROD"
 
-def _connect_to_snowflake():
     return snowflake.connector.connect(
         account=os.environ["SNOWFLAKE_ACCOUNT"],
         user=os.environ["SNOWFLAKE_USER"],
         password=os.environ["SNOWFLAKE_PASSWORD"],
-        database='MINDMAP_DB', warehouse='MINDMAP_WH',
-        schema='PUBLIC'
+        database=f"MINDMAP_{env}",
+        warehouse=f"MINDMAP_{env}_WH",
+        schema="SILVER"
     )
 
+
+
 # parse PDF to search for conclusion
-@app.function(image=image, secrets=[modal.Secret.from_name("snowflake-creds")], max_containers=1)
+@app.function(image=image, secrets=[snowflake_secret], max_containers=1)
 def extract_conclusion(arxiv_id: str):
     import httpx
     import pymupdf # PyMuPDF
@@ -94,7 +89,7 @@ def extract_conclusion(arxiv_id: str):
 # Use the Semantic Scholar API to extract connections
 # mode == 0 (default): use the API to fetch references (papers this arxiv_id cites)
 # mode == 1: use the API to fetch citations (papers that cite this arxiv_id)
-@app.function(image=image, secrets=[modal.Secret.from_name("snowflake-creds")], max_containers=5)
+@app.function(image=image, secrets=[snowflake_secret], max_containers=5)
 def fetch_connections_ss(arxiv_id: str, mode=0):
     import httpx
     import time
@@ -157,7 +152,7 @@ def fetch_connections_ss(arxiv_id: str, mode=0):
         return None
     
 # Use PDF parsing to extract references
-@app.function(image=image, secrets=[modal.Secret.from_name("snowflake-creds")], max_containers=4)
+@app.function(image=image, secrets=[snowflake_secret], max_containers=4)
 def extract_references_pdf(arxiv_id: str):
     import httpx
     import fitz 
@@ -207,7 +202,7 @@ def extract_references_pdf(arxiv_id: str):
 
 # get citations for a given paper with arxiv_id
 # first attempts via the Semantic Scholar, then tries parsing pdf if that fails
-@app.function(image=image, secrets=[modal.Secret.from_name("snowflake-creds")], max_containers=5)
+@app.function(image=image, secrets=[snowflake_secret], max_containers=5)
 def get_references(arxiv_id: str):
 
     # 1. Try Semantic Scholar (The "Clean" Way)
@@ -227,7 +222,7 @@ def get_references(arxiv_id: str):
 
     return {"source": "none", "data": []}
      
-@app.function(image=image, secrets=[modal.Secret.from_name("snowflake-creds")], max_containers=5)
+@app.function(image=image, secrets=[snowflake_secret], max_containers=5)
 def transform_to_silver(arxiv_id: str):
     import json
     
@@ -250,7 +245,7 @@ def transform_to_silver(arxiv_id: str):
     except:
         pass
 
-    conn = _connect_to_snowflake()
+    conn = connect_to_snowflake()
     cur = conn.cursor()
 
     try:
@@ -262,25 +257,25 @@ def transform_to_silver(arxiv_id: str):
                 SELECT 
                     %s as arxiv_id,
                     %s as ss_id,
-                    raw_payload:title::STRING as title,
-                    raw_payload:summary::STRING as abstract,
+                    "raw_payload":title::STRING as title,
+                    "raw_payload":summary::STRING as abstract,
                     %s as conclusion,
                     PARSE_JSON(%s) as reference_list,
                     PARSE_JSON(%s) as citation_list
-                FROM BRONZE_PAPERS
-                WHERE raw_payload:entry_id::STRING LIKE %s
+                FROM "MINDMAP_PROD"."BRONZE"."BRONZE_PAPERS"
+                WHERE "raw_payload":entry_id::STRING LIKE %s
                 LIMIT 1
             ) source
-            ON target.arxiv_id = source.arxiv_id OR (target.ss_id = source.ss_id AND source.ss_id IS NOT NULL)
+            ON target."arxiv_id" = source.arxiv_id OR (target."ss_id" = source.ss_id AND source.ss_id IS NOT NULL)
             WHEN MATCHED THEN
                 UPDATE SET 
-                    target.arxiv_id = COALESCE(target.arxiv_id, source.arxiv_id),
-                    target.ss_id = COALESCE(target.ss_id, source.ss_id),
-                    target.conclusion = source.conclusion,
-                    target.reference_list = source.reference_list,
-                    target.citation_list = source.citation_list
+                    target."arxiv_id" = COALESCE(target."arxiv_id", source.arxiv_id),
+                    target."ss_id" = COALESCE(target."ss_id", source.ss_id),
+                    target."conclusion" = source.conclusion,
+                    target."reference_list" = source.reference_list,
+                    target."citation_list" = source.citation_list
             WHEN NOT MATCHED THEN
-                INSERT (arxiv_id, ss_id, title, abstract, conclusion, reference_list, citation_list)
+                INSERT ("arxiv_id", "ss_id", "title", "abstract", "conclusion", "reference_list", "citation_list")
                 VALUES (source.arxiv_id, source.ss_id, source.title, source.abstract, source.conclusion, source.reference_list, source.citation_list);
         """, (
             arxiv_id,
@@ -303,18 +298,18 @@ def transform_to_silver(arxiv_id: str):
 
 
 # Provides a list of arxiv_ids in the bronze layer to be processed into silver
-@app.function(image=image, secrets=[modal.Secret.from_name("snowflake-creds")], max_containers=5)
+@app.function(image=image, secrets=[snowflake_secret], max_containers=5)
 def get_bronze_worklist():
     import re
-    conn = _connect_to_snowflake()
+    conn = connect_to_snowflake()
     cur = conn.cursor()
     
     # Get all IDs in Bronze
-    cur.execute("SELECT raw_payload:entry_id::STRING FROM BRONZE_PAPERS")
+    cur.execute('SELECT "raw_payload":entry_id::STRING FROM "MINDMAP_PROD"."BRONZE"."BRONZE_PAPERS"')
     rows = cur.fetchall()
     
     # Optional: Filter out papers already in Silver to avoid redundant work
-    cur.execute("SELECT arxiv_id FROM SILVER_PAPERS")
+    cur.execute('SELECT "arxiv_id" FROM "MINDMAP_PROD"."SILVER"."SILVER_PAPERS"')
     existing_ids = {row[0] for row in cur.fetchall()}
     conn.close()
 
@@ -327,7 +322,7 @@ def get_bronze_worklist():
                 arxiv_ids.append(aid)
     return arxiv_ids
 
-@app.local_entrypoint()
+@app.function(image=image, secrets=[snowflake_secret], max_containers=1)
 def main(parallel=1):
     ids_to_process = get_bronze_worklist.remote()
     print(f"DEBUG: Found {len(ids_to_process)} papers to process.")

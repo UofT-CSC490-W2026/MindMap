@@ -22,12 +22,10 @@ import itertools
 import wandb
 import torch
 import torch.distributed as dist
-from contextlib import nullcontext
-
 from nanochat.common import compute_init, compute_cleanup, print0, get_base_dir, DummyWandb, autodetect_device_type
 from nanochat.checkpoint_manager import save_checkpoint, load_model
 from nanochat.engine import Engine
-from tasks.gsm8k import GSM8K, extract_answer
+from tasks.gsm8k import GSM8K
 
 # -----------------------------------------------------------------------------
 # CLI arguments
@@ -36,7 +34,6 @@ parser = argparse.ArgumentParser(description="Reinforcement learning on GSM8K")
 parser.add_argument("--run", type=str, default="dummy", help="wandb run name ('dummy' disables wandb logging)")
 # Runtime
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
-parser.add_argument("--dtype", type=str, default="bfloat16", help="float32|bfloat16")
 # Model loading
 parser.add_argument("--model-tag", type=str, default=None, help="model tag to load from")
 parser.add_argument("--model-step", type=int, default=None, help="model step to load from")
@@ -50,16 +47,6 @@ parser.add_argument("--num-samples", type=int, default=16, help="number of sampl
 parser.add_argument("--max-new-tokens", type=int, default=256, help="max tokens to generate per sample")
 parser.add_argument("--temperature", type=float, default=1.0, help="sampling temperature")
 parser.add_argument("--top-k", type=int, default=50, help="top-k sampling (0 = disabled)")
-
-# Reward Mode
-parser.add_argument(
-    "--reward-mode",
-    type=str,
-    default="combined",
-    choices=["baseline", "format", "proximity", "combined"],
-    help="reward system to use for RL"
-)
-
 # Optimization
 parser.add_argument("--embedding-lr", type=float, default=0.2, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
@@ -70,6 +57,9 @@ parser.add_argument("--init-lr-frac", type=float, default=0.05, help="initial LR
 parser.add_argument("--eval-every", type=int, default=60, help="evaluate pass@k every N steps")
 parser.add_argument("--eval-examples", type=int, default=400, help="number of examples for pass@k evaluation")
 parser.add_argument("--save-every", type=int, default=60, help="save checkpoint every N steps")
+parser.add_argument("--reward-mode", type=str, default="baseline", 
+                    choices=["baseline", "format", "reasoning", "combined"],
+                    help="Which reward system to use for this run")
 args = parser.parse_args()
 user_config = vars(args).copy()
 # -----------------------------------------------------------------------------
@@ -78,8 +68,6 @@ user_config = vars(args).copy()
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type)
 master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
-ptdtype = torch.float32 if args.dtype == 'float32' else torch.bfloat16
-autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
 
 # wandb logging init
 use_dummy_wandb = args.run == "dummy" or not master_process
@@ -87,6 +75,7 @@ wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat-rl
 
 # Init model and tokenizer
 model, tokenizer, meta = load_model("sft", device, phase="eval", model_tag=args.model_tag, step=args.model_step)
+model.to(dtype=torch.bfloat16)
 engine = Engine(model, tokenizer) # for sampling rollouts
 
 # -----------------------------------------------------------------------------
@@ -118,71 +107,74 @@ def get_batch():
         num_sampling_steps = args.num_samples // args.device_batch_size # go sequentially to prevent OOMs
         for sampling_step in range(num_sampling_steps):
             seed = hash((step, example_idx, sampling_step)) & 0x7FFFFFFF # positive half of int32
-            with autocast_ctx:
-                generated_token_sequences_batch, masks_batch = engine.generate_batch(
-                    tokens,
-                    num_samples=args.device_batch_size,
-                    max_tokens=args.max_new_tokens,
-                    temperature=args.temperature,
-                    top_k=args.top_k,
-                    seed=seed, # must make sure to change the seed for each sampling step
-                )
+            generated_token_sequences_batch, masks_batch = engine.generate_batch(
+                tokens,
+                num_samples=args.device_batch_size,
+                max_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                top_k=args.top_k,
+                seed=seed, # must make sure to change the seed for each sampling step
+            )
             generated_token_sequences.extend(generated_token_sequences_batch)
             masks.extend(masks_batch)
 
-        # NOTE: We changed the reward loop
-        # ----------------------------------------
         # Calculate the rewards for each sample
         rewards = []
-
-        # Ground-truth GSM8K final answer from the conversation
-        assistant_message = conversation["messages"][-1]
-        gold_text = assistant_message["content"][-1]["text"]
-        gold_answer = extract_answer(gold_text)
-
         for sample_tokens in generated_token_sequences:
             # Get just the generated tokens (after the prompt)
             generated_tokens = sample_tokens[prefix_length:]
-
             # Decode the generated response
             generated_text = tokenizer.decode(generated_tokens)
 
-            # Original nanochat reward: exact correctness (1.0 or 0.0)
-            base_reward = float(train_task.reward(conversation, generated_text))
-            total_reward = base_reward
+            # Calculate the reward (Changed!)
+            base_reward = train_task.reward(conversation, generated_text) # 1.0 or 0.0
+            total_reward = float(base_reward)
 
-            # If baseline mode, keep original behavior exactly
-            if args.reward_mode == "baseline":
-                rewards.append(total_reward)
-                continue
-
-            # Extract model's final answer after ####
-            pred_answer = extract_answer(generated_text)
-
-            # Reward 1: formatting / extractable-answer bonus
-            # Encourage the model to produce a parseable GSM8K-style final answer
+            # --- REWARD 1: FORMAT BONUS ---
             if args.reward_mode in ["format", "combined"]:
-                if pred_answer is not None:
-                    total_reward += 0.15
+                # Reward finding the answer box
+                if "####" in generated_text:
+                    total_reward += 0.4 
+                # Penalty if the model is too short (likely didn't try to reason)
+                if len(generated_text) < 50:
+                    total_reward -= 0.2
 
-            # Reward 2: numeric proximity bonus
-            # Give partial credit when the parsed answer is numerically close
-            if args.reward_mode in ["proximity", "combined"]:
-                if pred_answer is not None and gold_answer is not None:
-                    try:
-                        pred_val = float(pred_answer)
-                        gold_val = float(gold_answer)
-                        abs_err = abs(pred_val - gold_val)
+            # --- REWARD 2: MULTI-STEP REASONING ---
+            if args.reward_mode in ["reasoning", "combined"]:
+                # A) Operator Density: Reward actual math symbols (+, -, *, /, =)
+                # This addresses the "Calculator but not Thinker" gap from Part 3.
+                operators = sum(generated_text.count(op) for op in ['+', '-', '*', '/', '='])
+                # We give +0.04 per operator, capped at 0.2 to prevent "operator stuffing."
+                operator_bonus = min(operators * 0.04, 0.2)
+                total_reward += operator_bonus
 
-                        # exact match already gets base_reward=1.0
-                        # this bonus gives denser signal for near misses
-                        proximity_bonus = 0.25 / (1.0 + abs_err)
-                        total_reward += proximity_bonus
-                    except ValueError:
-                        pass
+                # B) Reasoning Steps: Look for structural markers
+                # This addresses the "0% Multi-step accuracy" from Part 3.
+                reasoning_markers = ["Step", "First", "Then", "Finally", "Therefore", "Because"]
+                marker_count = sum(1 for m in reasoning_markers if m in generated_text)
+                # Give a small boost for organized thinking
+                total_reward += min(marker_count * 0.05, 0.1)
+                
+                # C) Newline Density
+                # Multiple steps usually mean multiple lines.
+                if generated_text.count('\n') >= 3:
+                    total_reward += 0.05
 
+            # add reward
             rewards.append(total_reward)
-        # -----------------------------------------
+
+            # (for debugging, set to true if you want to see the reward breakdown and sample generations during training. 
+            # Can be helpful to understand why the reward is 0 for many samples at the beginning)
+            DEBUG = False # change to True to enable debug printing
+            if DEBUG:
+                if master_process and step % 1 == 0:
+                    print(f"\n--- STEP {step} DEBUG ---")
+                    print(f"Base Reward: {base_reward}")
+                    print(f"Total Reward: {total_reward}")
+                    print(f" format_bonus: {0.4 if '####' in generated_text else 0.0}")
+                    print(f" reasoning_bonus: {min(steps * 0.05, 0.3) if args.reward_mode in ['reasoning', 'combined'] else 0.0}")
+                    # Optional: see the text to understand why the reward is 0
+                    print(f"Sample Text: {generated_text}")
 
         # Pad the sequences so that their lengths (in time) match
         max_length = max(len(seq) for seq in generated_token_sequences)
@@ -284,9 +276,8 @@ for step in range(num_steps):
     if step % args.eval_every == 0:
         model.eval()
         passk = torch.zeros(args.device_batch_size, device=device) # pass@k for k=1..device_batch_size
-        with autocast_ctx:
-            records_iter = run_gsm8k_eval(val_task, tokenizer, engine, num_samples=args.device_batch_size, max_examples=args.eval_examples, temperature=1.0)
-            records = list(records_iter) # collect all records
+        records_iter = run_gsm8k_eval(val_task, tokenizer, engine, num_samples=args.device_batch_size, max_examples=args.eval_examples, temperature=1.0)
+        records = list(records_iter) # collect all records
         for k in range(1, args.device_batch_size + 1):
             passk[k - 1] = sum(any(o["is_correct"] for o in r["outcomes"][:k]) for r in records)
         num_records = torch.tensor(len(records), dtype=torch.long, device=device)
@@ -321,8 +312,7 @@ for step in range(num_steps):
             rewards = rewards_all[b0:b1]
             advantages = advantages_all[b0:b1]
             # Calculate log probabilities. Note that the loss calculates NLL = -logp, so we negate
-            with autocast_ctx:
-                logp = -model(inputs, targets, loss_reduction='none').view_as(inputs) # (B, T)
+            logp = -model(inputs, targets, loss_reduction='none').view_as(inputs) # (B, T)
             # Calculate the PG objective. Note that ignore_index=-1 ensures that invalid tokens have loss 0.
             pg_obj = (logp * advantages.unsqueeze(-1)).sum()
             # normalize by the number of valid tokens, number of passes, and examples_per_rank

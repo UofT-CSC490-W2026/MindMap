@@ -47,7 +47,7 @@ DEPTH = 20
 # ── Data shards ───────────────────────────────────────────────────────────────
 # FineWeb-EDU is split into 1822 parquet shards, each ~250M chars / ~100MB.
 # 240 shards is enough for d24. Use 450 for d26 and 800 for d32.
-NUM_SHARDS = 240
+NUM_SHARDS = 8
 
 # ── GPU configuration ─────────────────────────────────────────────────────────
 # "H100:8" = 8 H100s, the reference configuration for the speedrun leaderboard.

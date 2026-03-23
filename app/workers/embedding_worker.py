@@ -1,21 +1,7 @@
-import modal
 from typing import List, Dict, Any, Tuple
 
 from app.utils.snowflake_utils import connect_snowflake
-
-# ---- Modal image ----
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .pip_install(
-        "sentence-transformers==2.7.0",
-        "torch",
-        "snowflake-connector-python[pandas]==3.12.0",
-        "pandas",
-    )
-)
-
-app = modal.App("mindmap-ml-workers")
-secret = modal.Secret.from_name("mindmap-1")
+from app.utils.modal_config import app_ml, image_embedding, secret_mindmap
 
 def _ensure_embeddings_table(cur):
     cur.execute(
@@ -81,7 +67,7 @@ def _upsert_embeddings(cur, rows: List[Tuple[str, str, List[float]]]):
     cur.execute(merge_sql, flat_params)
 
 
-@app.function(image=image, secrets=[secret], timeout=60 * 20)
+@app_ml.function(image=image_embedding, secrets=[secret_mindmap], timeout=60 * 20)
 def run_embedding_batch(
     limit: int = 200,
     model_name: str = "sentence-transformers/all-MiniLM-L6-v2",

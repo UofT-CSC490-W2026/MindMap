@@ -1,15 +1,10 @@
-import modal
 import json
 
-import snowflake.connector
 from app.utils.snowflake_utils import connect_snowflake
-
-app = modal.App("ingestion-worker")
-
-image = modal.Image.debian_slim().pip_install("snowflake-connector-python", "arxiv")
+from app.utils.modal_config import app_ingestion, image_ingestion, secret_mindmap
 
 # Credentials should be stored in a Modal Secret
-@app.function(image=image, secrets=[modal.Secret.from_name("mindmap-1")])
+@app_ingestion.function(image=image_ingestion, secrets=[secret_mindmap])
 def ingest_from_arxiv(query: str, max_results: int = 5):
     """
     Step 1: Ingestion to Bronze Layer

@@ -1,18 +1,9 @@
-import modal
 from typing import List, Dict, Any
 
 from app.utils.snowflake_utils import connect_snowflake
+from app.utils.modal_config import app_ml, image_semantic_search, secret_mindmap
 
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .pip_install("snowflake-connector-python[pandas]==3.12.0", "pandas")
-)
-
-app = modal.App("mindmap-ml-workers")
-secret = modal.Secret.from_name("mindmap-1")
-
-
-@app.function(image=image, secrets=[secret], timeout=60 * 5)
+@app_ml.function(image=image_semantic_search, secrets=[secret_mindmap], timeout=60 * 5)
 def get_related_papers(paper_id: str, k: int = 10) -> List[Dict[str, Any]]:
     conn = connect_snowflake()
     cur = conn.cursor()

@@ -10,3 +10,7 @@ def _connect_snowflake():
         database='MINDMAP_DB', warehouse='MINDMAP_WH',
         schema='PUBLIC'
     )
+
+
+def connect_snowflake():
+    return _connect_snowflake()

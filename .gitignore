@@ -1,2 +1,5 @@
 __pycache__/
 *.env
+
+A4/tmp
+*.DS_Store

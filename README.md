@@ -2,6 +2,87 @@
 
 MindMap is an AI-assisted system for exploring academic literature through semantic retrieval and interactive visualization. Instead of returning a flat list of search results, MindMap helps users understand how papers relate, discover relevant work, and navigate research areas more effectively.
 
+## Table of Contents
+
+- [Installation / Getting Started](#installation--getting-started)
+- [Pipeline Overview](#pipeline-overview)
+- [Features](#features)
+- [Architecture](#architecture)
+  - [1. Data Ingestion Layer](#1-data-ingestion-layer)
+  - [2. Representation Layer](#2-representation-layer)
+  - [3. Retrieval Layer](#3-retrieval-layer)
+  - [4. Ranking & Reasoning Layer](#4-ranking--reasoning-layer)
+  - [5. Graph Construction Layer](#5-graph-construction-layer)
+  - [6. Serving Layer](#6-serving-layer)
+  - [7. Infrastructure Layer](#7-infrastructure-layer)
+- [Tech Stack](#tech-stack)
+- [Inspiration](#inspiration)
+- [Status](#status)
+
+## Getting Started
+
+### Prerequisites
+- Node.js 18+
+- npm
+
+### 1. Quick Start (Frontend Users)
+
+Use this if you only want to run the UI.
+
+```bash
+# clone the repo
+git clone https://github.com/UofT-CSC490-W2026/MindMap.git
+cd MindMap
+
+# install and run frontend
+cd react
+npm install
+npm run dev
+```
+
+Open the local URL shown in your terminal (usually `http://localhost:5173`).
+
+### 2. Developer / Admin Setup (Backend + Data Pipeline)
+
+Use this if you are developing backend features or refreshing pipeline data.
+
+Additional prerequisites:
+- Python 3.10+
+- uv
+- Modal CLI configured (`modal setup`)
+- Snowflake credentials available through Modal secrets
+
+Backend setup:
+```bash
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+```
+
+Example run:
+
+```bash
+# end-to-end run
+python -m app.main pipeline --query "graph neural networks" --max-results 10 --embed-limit 200
+
+# you can also run individual steps
+python -m app.main ingest --query "graph neural networks" --max-results 10
+python -m app.main transform
+python -m app.main embed --limit 200
+```
+
+## Pipeline Overview
+
+MindMap runs as a staged retrieval pipeline:
+
+1. Ingest: Pull paper metadata/content from arXiv and write raw records to Bronze tables.
+2. Transform: Normalize raw payloads into structured Silver tables with paper-level fields.
+3. Embed: Generate vector embeddings for papers and store them for semantic retrieval.
+4. Retrieve: Given a paper or query, run vector similarity search to find related candidates.
+5. Build graph: Convert related papers and links into node/edge data for the frontend graph view.
+
+The `pipeline` command in `app/main.py` runs the first three stages end-to-end; retrieval and graph rendering happen at query time in the app experience. End users interact with the frontend, while backend pipeline commands are for maintainers/developers.
+
 ## Features
 
 - Semantic paper retrieval using embeddings  

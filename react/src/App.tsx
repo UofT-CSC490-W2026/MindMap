@@ -1,29 +1,29 @@
 import { useMemo, useRef, useState } from 'react'
-import ForceGraph2D, { type ForceGraphMethods } from 'react-force-graph-2d'
-import { graphData, type GraphLink, type GraphNode } from './mock/graphData'
+import ForceGraph2D from 'react-force-graph-2d'
+import { useGraphData } from './hooks/useGraphData'
+import type { GraphNode, GraphLink } from './types/graph'
 
 function asNodeId(v: GraphLink['source'] | GraphLink['target']) {
-  return typeof v === 'object' ? v.id : v
+  return typeof v === 'object' ? (v as GraphNode).id : v
 }
 
 export default function App() {
-  const fgRef = useRef<ForceGraphMethods<GraphNode, GraphLink> | undefined>()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fgRef = useRef<any>(undefined)
+  const { data: graphData, loading } = useGraphData()
 
   const [query, setQuery] = useState('')
-  const [selectedId, setSelectedId] = useState<string>('paper:attention')
+  const [selectedId, setSelectedId] = useState<number | null>(null)
 
-  const { paperNodes, idToNode } = useMemo(() => {
-    const map = new Map<string, GraphNode>()
+  const idToNode = useMemo(() => {
+    const map = new Map<number, GraphNode>()
     for (const n of graphData.nodes) map.set(n.id, n)
-    return {
-      paperNodes: graphData.nodes.filter((n) => n.kind === 'paper'),
-      idToNode: map,
-    }
-  }, [])
+    return map
+  }, [graphData.nodes])
 
   const neighborIds = useMemo(() => {
-    const s = new Set<string>()
-    if (!selectedId) return s
+    const s = new Set<number>()
+    if (selectedId == null) return s
     s.add(selectedId)
     for (const l of graphData.links) {
       const a = asNodeId(l.source)
@@ -32,28 +32,36 @@ export default function App() {
       if (b === selectedId) s.add(a)
     }
     return s
-  }, [selectedId])
+  }, [selectedId, graphData.links])
 
   const filteredPaperNodes = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return paperNodes
-    return paperNodes.filter((p) => p.searchText.toLowerCase().includes(q))
-  }, [paperNodes, query])
+    if (!q) return graphData.nodes
+    return graphData.nodes.filter((p) => p.searchText.toLowerCase().includes(q))
+  }, [graphData.nodes, query])
 
-  const selectedPaper = selectedId ? idToNode.get(selectedId) : undefined
+  const selectedPaper = selectedId != null ? idToNode.get(selectedId) : undefined
+
+  if (loading) {
+    return (
+      <main className="app" style={{ display: 'grid', placeItems: 'center' }}>
+        <div style={{ color: 'var(--research-text)' }}>Loading graph...</div>
+      </main>
+    )
+  }
 
   return (
     <main className="app">
       <header className="topbar glass">
         <div className="brand">
           <div className="brandMark" aria-hidden="true">
-            R
+            M
           </div>
           <div className="brandText">
             <div className="brandTitle">
-              Research<span className="accent">Graph</span>
+              Mind<span className="accent">Map</span>
             </div>
-            <div className="brandSub">Paper topics • citations • relationships</div>
+            <div className="brandSub">Paper topics &bull; citations &bull; relationships</div>
           </div>
         </div>
 
@@ -141,29 +149,44 @@ export default function App() {
         <section className="center">
           <div className="graphWrap">
             <ForceGraph2D<GraphNode, GraphLink>
-              ref={fgRef as unknown as React.RefObject<ForceGraphMethods<GraphNode, GraphLink>>}
+              ref={fgRef}
               graphData={graphData}
               backgroundColor="#0a192f"
               nodeRelSize={4}
-              nodeLabel={(n) =>
-                n.kind === 'paper'
-                  ? `${n.title}\n${n.authors} (${n.year})`
-                  : `Topic: ${n.label}`
-              }
-              linkColor={() => 'rgba(100, 255, 218, 0.10)'}
-              linkWidth={(l) => (l.kind === 'cites' ? 1.2 : 0.8)}
-              linkDirectionalParticles={(l) => (l.kind === 'cites' ? 2 : 0)}
+              nodeId="id"
+              nodeLabel={(n) => `${n.title}\n${n.authors} (${n.year})`}
+              linkColor={(l) => {
+                const link = l as GraphLink
+                return link.relationship_type === 'CITES'
+                  ? 'rgba(100, 255, 218, 0.15)'
+                  : 'rgba(96, 165, 250, 0.15)'
+              }}
+              linkWidth={(l) => {
+                const link = l as GraphLink
+                return link.relationship_type === 'CITES' ? 1.2 * link.strength : 0.8 * link.strength
+              }}
+              linkDirectionalParticles={(l) => {
+                const link = l as GraphLink
+                return link.relationship_type === 'CITES' ? 2 : 0
+              }}
               linkDirectionalParticleWidth={1.2}
-              linkDirectionalParticleSpeed={(l) => (l.kind === 'cites' ? 0.008 : 0.004)}
+              linkDirectionalParticleSpeed={(l) => {
+                const link = l as GraphLink
+                return link.relationship_type === 'CITES' ? 0.008 : 0.004
+              }}
+              linkLineDash={(l) => {
+                const link = l as GraphLink
+                return link.relationship_type === 'SIMILAR' ? [4, 2] : []
+              }}
               nodeColor={(n) => {
                 if (n.id === selectedId) return '#64ffda'
-                if (neighborIds.has(n.id)) return n.kind === 'paper' ? '#233554' : '#1e3a8a'
-                return n.kind === 'paper' ? '#112240' : '#1f2937'
+                if (neighborIds.has(n.id)) return '#233554'
+                return '#112240'
               }}
               nodeCanvasObject={(node, ctx, globalScale) => {
                 const isSelected = node.id === selectedId
                 const isNeighbor = neighborIds.has(node.id)
-                const baseR = node.kind === 'paper' ? 6 : 4
+                const baseR = 6
                 const r = isSelected ? baseR * 1.6 : isNeighbor ? baseR * 1.2 : baseR
 
                 ctx.beginPath()
@@ -172,12 +195,8 @@ export default function App() {
                   node.id === selectedId
                     ? '#64ffda'
                     : isNeighbor
-                      ? node.kind === 'paper'
-                        ? '#233554'
-                        : '#2563eb'
-                      : node.kind === 'paper'
-                        ? '#112240'
-                        : '#0f172a'
+                      ? '#233554'
+                      : '#112240'
                 ctx.shadowBlur = isSelected ? 18 : 0
                 ctx.shadowColor = isSelected ? '#64ffda' : 'transparent'
                 ctx.fill()
@@ -187,8 +206,8 @@ export default function App() {
                 ctx.strokeStyle = isSelected ? 'rgba(100,255,218,0.9)' : 'rgba(35,53,84,0.9)'
                 ctx.stroke()
 
-                if (globalScale > 2.1 && (isSelected || (node.kind === 'paper' && isNeighbor))) {
-                  const label = node.kind === 'paper' ? node.shortTitle : node.label
+                if (globalScale > 2.1 && (isSelected || isNeighbor)) {
+                  const label = node.shortTitle
                   const fontSize = 12 / globalScale
                   ctx.font = `${fontSize}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif`
                   ctx.textAlign = 'left'
@@ -259,7 +278,7 @@ export default function App() {
 
           <div className="preview">
             <div className="previewTitle">Selected</div>
-            {selectedPaper?.kind === 'paper' ? (
+            {selectedPaper ? (
               <>
                 <div className="previewHeading">{selectedPaper.title}</div>
                 <div className="previewAuthors">{selectedPaper.authors}</div>

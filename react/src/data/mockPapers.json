@@ -1,0 +1,92 @@
+[
+  {
+    "id": 1,
+    "title": "Attention Is All You Need",
+    "shortTitle": "Attention",
+    "authors": "Vaswani et al.",
+    "year": 2017,
+    "citations": 14203,
+    "primaryTopic": "NLP"
+  },
+  {
+    "id": 2,
+    "title": "BERT: Pre-training of Deep Bidirectional Transformers",
+    "shortTitle": "BERT",
+    "authors": "Devlin et al.",
+    "year": 2018,
+    "citations": 85321,
+    "primaryTopic": "NLP"
+  },
+  {
+    "id": 3,
+    "title": "GPT: Generative Pre-trained Transformer",
+    "shortTitle": "GPT",
+    "authors": "Radford et al.",
+    "year": 2018,
+    "citations": 12500,
+    "primaryTopic": "NLP"
+  },
+  {
+    "id": 4,
+    "title": "Scaling Laws for Neural Language Models",
+    "shortTitle": "Scaling Laws",
+    "authors": "Kaplan et al.",
+    "year": 2020,
+    "citations": 9800,
+    "primaryTopic": "ML Theory"
+  },
+  {
+    "id": 5,
+    "title": "RLHF for Large Language Models",
+    "shortTitle": "RLHF",
+    "authors": "Ouyang et al.",
+    "year": 2022,
+    "citations": 7600,
+    "primaryTopic": "Alignment"
+  },
+  {
+    "id": 6,
+    "title": "Distributed Representations of Words and Phrases",
+    "shortTitle": "word2vec",
+    "authors": "Mikolov et al.",
+    "year": 2013,
+    "citations": 119500,
+    "primaryTopic": "Embeddings"
+  },
+  {
+    "id": 7,
+    "title": "A Gentle Introduction to Graph Neural Networks",
+    "shortTitle": "GNN Intro",
+    "authors": "Hamilton",
+    "year": 2020,
+    "citations": 9800,
+    "primaryTopic": "Graphs"
+  },
+  {
+    "id": 8,
+    "title": "DeepWalk: Online Learning of Social Representations",
+    "shortTitle": "DeepWalk",
+    "authors": "Perozzi et al.",
+    "year": 2014,
+    "citations": 15300,
+    "primaryTopic": "Graphs"
+  },
+  {
+    "id": 9,
+    "title": "Latent Dirichlet Allocation",
+    "shortTitle": "LDA",
+    "authors": "Blei, Ng, Jordan",
+    "year": 2003,
+    "citations": 89500,
+    "primaryTopic": "Topics"
+  },
+  {
+    "id": 10,
+    "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP",
+    "shortTitle": "RAG",
+    "authors": "Lewis et al.",
+    "year": 2020,
+    "citations": 9100,
+    "primaryTopic": "NLP"
+  }
+]

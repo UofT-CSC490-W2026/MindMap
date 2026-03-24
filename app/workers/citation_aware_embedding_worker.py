@@ -1,27 +1,10 @@
-import modal
 from typing import List, Dict, Any, Tuple
 import math
 
 from app.utils.snowflake_utils import _connect_snowflake
+from app.utils.modal_config import app_ml, image_citation_aware, secret_snowflake
 from .citation_worker import get_citations  # your Modal function
 # NOTE: importing Modal functions across files is okay if both are in the same app name
-
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .pip_install(
-        "sentence-transformers==2.7.0",
-        "torch",
-        "snowflake-connector-python[pandas]==3.12.0",
-        "pandas",
-        "requests",
-        "feedparser",
-        "pymupdf",
-        "numpy",
-    )
-)
-
-app = modal.App("mindmap-ml-workers")
-secret = modal.Secret.from_name("mindmap-1")
 
 
 def _l2_normalize(vec: List[float]) -> List[float]:
@@ -128,7 +111,7 @@ def _fetch_embeddings(cur, paper_ids: List[str]) -> List[List[float]]:
     return [list(r[0]) for r in rows]
 
 
-@app.function(image=image, secrets=[secret], timeout=60 * 30)
+@app_ml.function(image=image_citation_aware, secrets=[secret_snowflake], timeout=60 * 30)
 def run_citation_aware_embedding_batch(
     limit: int = 50,
     alpha: float = 0.8,

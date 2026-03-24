@@ -1,18 +1,8 @@
-import modal
 from typing import Dict, Any
 from app.utils.snowflake_utils import connect_snowflake
+from app.utils.modal_config import app_ml, image_citation, secret_snowflake
 
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .pip_install("requests", "feedparser", "pymupdf")
-)
-
-app = modal.App("mindmap-ml-workers")
-# no Snowflake needed yet, but keep secret if you later store refs to DB
-secret = modal.Secret.from_name("mindmap-1")
-
-
-@app.function(image=image, secrets=[secret], timeout=60 * 10)
+@app_ml.function(image=image_citation, secrets=[secret_snowflake], timeout=60 * 10)
 def get_citations(arxiv_id: str, max_refs: int = 200) -> Dict[str, Any]:
     """
     arXiv-based reference parsing:

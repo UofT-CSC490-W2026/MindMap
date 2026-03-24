@@ -1,14 +1,7 @@
-from modal import Image
-import modal
-
-import snowflake.connector
 from app.utils.snowflake_utils import connect_snowflake
+from app.utils.modal_config import app_transformation, image_transformation, secret_snowflake
 
-app = modal.App("transformation-worker")
-image = Image.debian_slim().pip_install("snowflake-connector-python")
-
-
-@app.function(image=image, secrets=[modal.Secret.from_name("snowflake-creds")])
+@app_transformation.function(image=image_transformation, secrets=[secret_snowflake])
 def transform_to_silver():
     """
     Step 2: Cleaning and Transformation

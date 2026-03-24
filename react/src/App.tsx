@@ -1,6 +1,7 @@
-import { useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState, useEffect } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
 import { useGraphData } from './hooks/useGraphData'
+import { useSemanticSearch } from './hooks/sematicSearch'
 import type { GraphNode, GraphLink } from './types/graph'
 
 function asNodeId(v: GraphLink['source'] | GraphLink['target']) {
@@ -14,6 +15,22 @@ export default function App() {
 
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<number | null>(null)
+
+  // Dropdown state
+  const [dropdownOpen, setDropdownOpen] = useState(false)
+  const searchWrapRef = useRef<HTMLDivElement>(null)
+  const { results: searchResults, loading: searchLoading } = useSemanticSearch(query)
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (searchWrapRef.current && !searchWrapRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
 
   const idToNode = useMemo(() => {
     const map = new Map<number, GraphNode>()
@@ -34,11 +51,15 @@ export default function App() {
     return s
   }, [selectedId, graphData.links])
 
+  // const filteredPaperNodes = useMemo(() => {
+  //   const q = query.trim().toLowerCase()
+  //   if (!q) return graphData.nodes
+  //   return graphData.nodes.filter((p) => p.searchText.toLowerCase().includes(q))
+  // }, [graphData.nodes, query])
+
   const filteredPaperNodes = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return graphData.nodes
-    return graphData.nodes.filter((p) => p.searchText.toLowerCase().includes(q))
-  }, [graphData.nodes, query])
+    return graphData.nodes
+  }, [graphData.nodes])
 
   const selectedPaper = selectedId != null ? idToNode.get(selectedId) : undefined
 
@@ -65,7 +86,8 @@ export default function App() {
           </div>
         </div>
 
-        <div className="searchWrap">
+        {/* ── Search with Dropdown ── */}
+        <div className="searchWrap" ref={searchWrapRef} style={{ position: 'relative' }}>
           <div className="search">
             <svg
               className="searchIcon"
@@ -83,12 +105,165 @@ export default function App() {
             </svg>
             <input
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value)
+                setDropdownOpen(true)
+              }}
+              onFocus={() => {
+                if (query.trim().length >= 2) setDropdownOpen(true)
+              }}
               placeholder="Search papers, authors, or topics..."
               className="searchInput"
               spellCheck={false}
             />
+            {searchLoading && (
+              <span
+                style={{
+                  color: '#64ffda',
+                  fontSize: 11,
+                  paddingRight: 12,
+                  opacity: 0.7,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                searching…
+              </span>
+            )}
           </div>
+
+          {/* ── Dropdown Results ── */}
+          {dropdownOpen && searchResults.length > 0 && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 'calc(100% + 6px)',
+                left: 0,
+                right: 0,
+                background: '#0d2137',
+                border: '1px solid rgba(100,255,218,0.18)',
+                borderRadius: 10,
+                zIndex: 1000,
+                overflow: 'hidden',
+                boxShadow: '0 16px 48px rgba(0,0,0,0.55)',
+              }}
+            >
+              {/* Header row */}
+              <div
+                style={{
+                  padding: '8px 16px',
+                  fontSize: 10,
+                  letterSpacing: '0.08em',
+                  textTransform: 'uppercase',
+                  color: '#64ffda',
+                  borderBottom: '1px solid rgba(100,255,218,0.08)',
+                  background: 'rgba(100,255,218,0.04)',
+                }}
+              >
+                Top results from Semantic Scholar
+              </div>
+
+              {searchResults.map((r, i) => (
+                <button
+                  key={r.paperId}
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setQuery(r.title)
+                    setDropdownOpen(false)
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 12,
+                    width: '100%',
+                    textAlign: 'left',
+                    padding: '12px 16px',
+                    background: 'transparent',
+                    border: 'none',
+                    borderBottom:
+                      i < searchResults.length - 1
+                        ? '1px solid rgba(255,255,255,0.05)'
+                        : 'none',
+                    cursor: 'pointer',
+                    color: '#ccd6f6',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={(e) =>
+                    (e.currentTarget.style.background = 'rgba(100,255,218,0.06)')
+                  }
+                  onMouseLeave={(e) =>
+                    (e.currentTarget.style.background = 'transparent')
+                  }
+                >
+                  {/* Index badge */}
+                  <span
+                    style={{
+                      flexShrink: 0,
+                      width: 20,
+                      height: 20,
+                      borderRadius: '50%',
+                      background: 'rgba(100,255,218,0.12)',
+                      border: '1px solid rgba(100,255,218,0.25)',
+                      color: '#64ffda',
+                      fontSize: 10,
+                      fontWeight: 700,
+                      display: 'grid',
+                      placeItems: 'center',
+                      marginTop: 2,
+                    }}
+                  >
+                    {i + 1}
+                  </span>
+
+                  <div style={{ minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontWeight: 500,
+                        fontSize: 13,
+                        marginBottom: 4,
+                        lineHeight: 1.4,
+                        color: '#e6f0ff',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {r.title}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: '#8892b0',
+                        display: 'flex',
+                        gap: 8,
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      {r.authors.length > 0 && (
+                        <span>
+                          {r.authors
+                            .slice(0, 3)
+                            .map((a) => a.name)
+                            .join(', ')}
+                          {r.authors.length > 3 ? ' et al.' : ''}
+                        </span>
+                      )}
+                      {r.year && (
+                        <span style={{ color: 'rgba(100,255,218,0.5)' }}>
+                          {r.year}
+                        </span>
+                      )}
+                      {r.citationCount > 0 && (
+                        <span style={{ color: 'rgba(100,255,218,0.5)' }}>
+                          {r.citationCount.toLocaleString()} citations
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="topbarRight">
@@ -163,7 +338,9 @@ export default function App() {
               }}
               linkWidth={(l) => {
                 const link = l as GraphLink
-                return link.relationship_type === 'CITES' ? 1.2 * link.strength : 0.8 * link.strength
+                return link.relationship_type === 'CITES'
+                  ? 1.2 * link.strength
+                  : 0.8 * link.strength
               }}
               linkDirectionalParticles={(l) => {
                 const link = l as GraphLink
@@ -203,7 +380,9 @@ export default function App() {
 
                 ctx.shadowBlur = 0
                 ctx.lineWidth = 1 / globalScale
-                ctx.strokeStyle = isSelected ? 'rgba(100,255,218,0.9)' : 'rgba(35,53,84,0.9)'
+                ctx.strokeStyle = isSelected
+                  ? 'rgba(100,255,218,0.9)'
+                  : 'rgba(35,53,84,0.9)'
                 ctx.stroke()
 
                 if (globalScale > 2.1 && (isSelected || isNeighbor)) {
@@ -213,7 +392,11 @@ export default function App() {
                   ctx.textAlign = 'left'
                   ctx.textBaseline = 'middle'
                   ctx.fillStyle = 'rgba(204, 214, 246, 0.95)'
-                  ctx.fillText(label, (node.x ?? 0) + (r + 3) / globalScale, node.y ?? 0)
+                  ctx.fillText(
+                    label,
+                    (node.x ?? 0) + (r + 3) / globalScale,
+                    node.y ?? 0,
+                  )
                 }
               }}
               onNodeClick={(n) => {
@@ -285,7 +468,9 @@ export default function App() {
                 <div className="previewGrid">
                   <div className="metric">
                     <div className="metricLabel">Citations</div>
-                    <div className="metricValue">{selectedPaper.citations.toLocaleString()}</div>
+                    <div className="metricValue">
+                      {selectedPaper.citations.toLocaleString()}
+                    </div>
                   </div>
                   <div className="metric">
                     <div className="metricLabel">Connections</div>
@@ -297,7 +482,9 @@ export default function App() {
                 </button>
               </>
             ) : (
-              <div className="previewEmpty">Click a paper node or pick one from the list.</div>
+              <div className="previewEmpty">
+                Click a paper node or pick one from the list.
+              </div>
             )}
           </div>
         </aside>

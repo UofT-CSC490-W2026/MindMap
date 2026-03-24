@@ -57,6 +57,9 @@ input {
   border-left: none;
   border-right: none;
   border-top: none;
+  position: relative;        /* ADD THIS */
+  z-index: 50;               /* ADD THIS */
+  overflow: visible;
 }
 
 .brand {
@@ -91,6 +94,8 @@ input {
 
 .searchWrap {
   padding-inline: 16px;
+  overflow: visible;         /* ADD THIS */
+  position: relative;        /* ADD THIS */
 }
 .search {
   position: relative;
@@ -155,6 +160,8 @@ input {
   grid-template-columns: 260px 1fr 360px;
   gap: 16px;
   padding: 16px;
+  position: relative;        /* ADD THIS */
+  z-index: 1;     
 }
 
 .panel {

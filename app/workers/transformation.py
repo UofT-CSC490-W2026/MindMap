@@ -25,7 +25,16 @@ def _ss_get_json(url: str, params: dict | None = None, timeout: float = 20.0):
 
     api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY")
     headers = {"x-api-key": api_key} if api_key else None
-    response = httpx.get(url, params=params, timeout=timeout, headers=headers)
+
+    def _request(req_headers):
+        return httpx.get(url, params=params, timeout=timeout, headers=req_headers)
+
+    response = _request(headers)
+    if headers and response.status_code in (401, 403):
+        print("Semantic Scholar key rejected; retrying request without API key.")
+        headers = None
+        response = _request(headers)
+
     if response.status_code == 429:
         # One retry with additional backoff to keep request pace compliant.
         time.sleep(2.0)
@@ -35,7 +44,11 @@ def _ss_get_json(url: str, params: dict | None = None, timeout: float = 20.0):
             if wait > 0:
                 time.sleep(wait)
             _ss_last_request_ts = time.time()
-        response = httpx.get(url, params=params, timeout=timeout, headers=headers)
+        response = _request(headers)
+
+        if headers and response.status_code in (401, 403):
+            print("Semantic Scholar key rejected after retry; falling back to unauthenticated access.")
+            response = _request(None)
 
     response.raise_for_status()
     return response.json()
@@ -54,7 +67,16 @@ def _ss_post_json(url: str, payload: dict, params: dict | None = None, timeout: 
 
     api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY")
     headers = {"x-api-key": api_key} if api_key else None
-    response = httpx.post(url, json=payload, params=params, timeout=timeout, headers=headers)
+
+    def _request(req_headers):
+        return httpx.post(url, json=payload, params=params, timeout=timeout, headers=req_headers)
+
+    response = _request(headers)
+    if headers and response.status_code in (401, 403):
+        print("Semantic Scholar key rejected; retrying request without API key.")
+        headers = None
+        response = _request(headers)
+
     if response.status_code == 429:
         time.sleep(2.0)
         with _ss_lock:
@@ -63,7 +85,11 @@ def _ss_post_json(url: str, payload: dict, params: dict | None = None, timeout: 
             if wait > 0:
                 time.sleep(wait)
             _ss_last_request_ts = time.time()
-        response = httpx.post(url, json=payload, params=params, timeout=timeout, headers=headers)
+        response = _request(headers)
+
+        if headers and response.status_code in (401, 403):
+            print("Semantic Scholar key rejected after retry; falling back to unauthenticated access.")
+            response = _request(None)
 
     response.raise_for_status()
     return response.json()

@@ -40,7 +40,17 @@ def _ss_get_json(url: str, params: dict, timeout: float = 30.0) -> dict:
 
     api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY")
     headers = {"x-api-key": api_key} if api_key else None
-    response = httpx.get(url, params=params, timeout=timeout, headers=headers)
+
+    def _request(req_headers):
+        return httpx.get(url, params=params, timeout=timeout, headers=req_headers)
+
+    response = _request(headers)
+    # If provided key is invalid/forbidden, retry once without auth to use public access.
+    if headers and response.status_code in (401, 403):
+        print("Semantic Scholar key rejected; retrying request without API key.")
+        headers = None
+        response = _request(headers)
+
     if response.status_code == 429:
         # Backoff once while still preserving the strict lower-bound interval.
         time.sleep(2.0)
@@ -50,7 +60,12 @@ def _ss_get_json(url: str, params: dict, timeout: float = 30.0) -> dict:
             if wait > 0:
                 time.sleep(wait)
             _ss_last_request_ts = time.time()
-        response = httpx.get(url, params=params, timeout=timeout, headers=headers)
+        response = _request(headers)
+
+        # If rate-limited key-auth also resolves to unauthorized, final fallback to public access.
+        if headers and response.status_code in (401, 403):
+            print("Semantic Scholar key rejected after retry; falling back to unauthenticated access.")
+            response = _request(None)
 
     response.raise_for_status()
     return response.json()

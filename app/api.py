@@ -1,3 +1,8 @@
+"""
+Placeholder for API endpoints (that frontend will use).
+
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List

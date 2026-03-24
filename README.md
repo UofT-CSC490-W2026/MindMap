@@ -26,7 +26,7 @@ MindMap is an AI-assisted system for exploring academic literature through seman
 - Node.js 18+
 - npm
 
-### 1. Quick Start (Frontend Users)
+### 1. Quick Start
 
 Use this if you only want to run the UI.
 
@@ -43,7 +43,7 @@ npm run dev
 
 Open the local URL shown in your terminal (usually `http://localhost:5173`).
 
-### 2. Developer / Admin Setup (Backend + Data Pipeline)
+### 2. Developer / Admin Setup 
 
 Use this if you are developing backend features or refreshing pipeline data.
 
@@ -67,9 +67,11 @@ Modal + Snowflake credential setup:
 modal setup
 
 # 2) export Snowflake credentials in your shell
-export SNOWFLAKE_ACCOUNT="SCZSGQN-SG49598"
-export SNOWFLAKE_USER="hclover2003"
-export SNOWFLAKE_PASSWORD="mindMap20262026"
+export SNOWFLAKE_ACCOUNT="<your_account>"
+export SNOWFLAKE_USER="<your_user>"
+export SNOWFLAKE_PASSWORD="<your_password>"
+export SNOWFLAKE_WAREHOUSE="MINDMAP_WH"
+export SEMANTIC_SCHOLAR_API_KEY="<your_semantic_scholar_api_key>"
 
 # 3) create/update Modal secrets used by workers
 
@@ -77,6 +79,11 @@ modal secret create snowflake-creds \
   SNOWFLAKE_ACCOUNT="$SNOWFLAKE_ACCOUNT" \
   SNOWFLAKE_USER="$SNOWFLAKE_USER" \
   SNOWFLAKE_PASSWORD="$SNOWFLAKE_PASSWORD" \
+  SNOWFLAKE_WAREHOUSE="$SNOWFLAKE_WAREHOUSE" \
+  --force
+
+modal secret create semantic-scholar-api \
+  SEMANTIC_SCHOLAR_API_KEY="$SEMANTIC_SCHOLAR_API_KEY" \
   --force
 
 # 4) verify secrets exist
@@ -97,19 +104,15 @@ terraform init
 terraform workspace select dev || terraform workspace new dev
 
 # (use prod only when deploying production resources)
-# terraform workspace select prod
+# terraform workspace select prod # uncomment for prod
 
-# 3) define variables
+# 3) create schemas
 export TF_VAR_snowflake_account="$SNOWFLAKE_ACCOUNT"
 export TF_VAR_snowflake_user="$SNOWFLAKE_USER"
 export TF_VAR_snowflake_password="$SNOWFLAKE_PASSWORD"
 
-# 4) 
-# preview changes
-terraform plan
-
-# or apply changes
-terraform apply
+terraform plan # preview changes
+terraform apply # apply changes
 ```
 
 Example run:
@@ -117,95 +120,133 @@ Example run:
 ```bash
 QUERY="model quantization"
 
-# end-to-end run
-python -m app.main pipeline --query "$QUERY" --max-results 10 --embed-limit 20
+# run from repo root
+cd /path/to/MindMap
 
-# you can also run individual steps
-python -m app.main ingest --query "$QUERY" --max-results 10
-python -m app.main transform
-python -m app.main embed --limit 200
+# end-to-end pipeline (matches app/main.py local_entrypoint)
+modal run app/main.py \
+  --query "$QUERY" \
+  --source semantic_scholar \
+  --max-results 50
+
+# rerun without expensive early stages
+modal run app/main.py \
+  --query "$QUERY" \
+  --max-results 50 \
+  --skip-ingestion \
+  --skip-transformation \
+  --skip-ss-id-backfill
+
+# arXiv ingestion source
+modal run app/main.py \
+  --query "graph neural networks" \
+  --source arxiv \
+  --max-results 30
+
+# target a specific Snowflake database/schema
+modal run app/main.py \
+  --query "$QUERY" \
+  --database MINDMAP_DB \
+  --schema PUBLIC
 ```
 
 ## Codebase Overview
 
 ```text
 MindMap/
-├── app/                                 # Backend code and pipeline orchestration
-│   ├── main.py                          #   CLI entry point (pipeline, ingest, transform, embed)
-│   ├── create.sql                       #   Snowflake schema/table setup SQL
-│   ├── workers/                         #   Modal worker functions for each pipeline stage
-│   │   ├── ingestion.py                 #     arXiv ingestion into Bronze
-│   │   ├── transformation.py            #     Bronze -> Silver transformation
-│   │   ├── embedding_worker.py          #     baseline embedding generation
-│   │   ├── semantic_search.py           #     vector similarity retrieval
-│   │   ├── citation_worker.py           #     citation/reference extraction from PDFs
-│   │   └── citation_aware_embedding_worker.py  # citation-aware embedding pipeline
-│   └── utils/
-│       ├── snowflake_utils.py           #   Snowflake connection helpers
-│       └── modal_config.py              #   Shared Modal app/image/secret config
-├── react/                               # Frontend UI (Vite + React + TypeScript)
-│   ├── src/
-│   │   ├── App.tsx                      #   Main graph UI
-│   │   └── mock/graphData.ts            #   Current mock graph data source
-│   └── package.json                     #   Frontend scripts and dependencies
+├── app/                                 # Backend pipeline + API
+│   ├── api.py                           # FastAPI routes
+│   ├── config.py                        # Shared Modal app/images/secrets + DB constants
+│   ├── create_schemas.sql               # Snowflake schema/table bootstrap SQL
+│   ├── main.py                          # Modal local entrypoint pipeline orchestrator
+│   ├── setup_schema.py                  # One-time schema setup runner
+│   ├── useful_prompts.txt               # Prompt templates
+│   ├── utils.py                         # Snowflake connection helper
+│   └── workers/                         # Modal workers by stage
+│       ├── chunking_worker.py
+│       ├── citation_aware_embedding_worker.py
+│       ├── citation_worker.py
+│       ├── embedding_worker.py
+│       ├── graph_worker.py
+│       ├── ingestion.py
+│       ├── reasoning.py
+│       ├── semantic_search_worker.py
+│       └── transformation.py
+├── react/                               # Frontend (Vite + React + TypeScript)
+│   ├── src/                             # UI source
+│   └── package.json                     # Frontend scripts/deps
 ├── terraform/                           # Infrastructure as Code
-│   ├── main.tf                          #   Core infrastructure resources
-│   ├── providers.tf                     #   Terraform providers
-│   └── variables.tf                     #   Input variables
-├── assignments/                         # Course milestone/assignment artifacts
+│   ├── main.tf
+│   ├── providers.tf
+│   └── variables.tf
+├── assignments/                         # Course milestone artifacts
+├── evals/                               # Evaluation assets/scripts
+├── finetuning/                          # Fine-tuning assets/scripts
+├── requirements.txt                     # Python dependencies
 └── README.md                            # Project documentation
 ```
 
 ## Pipeline Overview
 
-MindMap runs as a staged retrieval pipeline:
+MindMap has an offline build pipeline plus online retrieval APIs.
 
-1. Ingest: Pull paper metadata/content from arXiv and write raw records to Bronze tables.
-2. Transform: Normalize raw payloads into structured Silver tables with paper-level fields.
-3. Embed: Generate vector embeddings for papers and store them for semantic retrieval.
-4. Retrieve: Given a paper or query, run vector similarity search to find related candidates.
-5. Build graph: Convert related papers and links into node/edge data for the frontend graph view.
+Offline pipeline (`modal run app/main.py`):
 
-The `pipeline` command in `app/main.py` runs the first three stages end-to-end; retrieval and graph rendering happen at query time in the app experience. End users interact with the frontend, while backend pipeline commands are for maintainers/developers.
+1. Ingestion: Pull papers from Semantic Scholar or arXiv into Bronze (`BRONZE_PAPERS`).
+2. Transformation: Normalize Bronze payloads into Silver paper records (`SILVER_PAPERS`) and enrich metadata.
+3. SS-ID backfill: Fill missing Semantic Scholar IDs for existing Silver rows.
+4. Paper embeddings: Compute paper-level vectors and initialize similar-paper caches.
+5. Chunking: Split papers into structured sections/chunks for RAG (`SILVER_PAPER_SECTIONS`, `SILVER_PAPER_CHUNKS`).
+6. Chunk embeddings + neighbor backfill: Embed chunks for dense retrieval and backfill similar IDs for older papers.
+7. Graph build: Materialize Gold-layer relationship edges from citations/similarity.
+
+Online retrieval (API/worker path):
+
+1. Related-paper lookup (`get_related_papers`) uses cached neighbors when available and falls back to vector search.
+2. Query semantic search (`semantic_search`) combines vector similarity with lightweight lexical overlap reranking.
+3. RAG chunk retrieval (`retrieve_similar_chunks`) returns top matching chunks for grounded QA/summarization.
+
+The pipeline supports step-level skip flags (`--skip-*`) so maintainers can rerun only changed stages.
 
 ## Features
 
-- Semantic paper retrieval using embeddings  
-- Context-aware reranking with metadata and LLM reasoning  
-- Graph-based mind map visualization of research topics  
-- Incremental ingestion pipeline for new papers  
-- Modular architecture for experimentation
+- Dual-source ingestion from Semantic Scholar and arXiv into Bronze storage  
+- Idempotent Bronze -> Silver transformation with metadata enrichment/backfills  
+- Paper-level embedding generation with cached similar-paper neighbors  
+- RAG-ready section/chunk generation plus chunk-level dense retrieval  
+- Hybrid semantic search (vector score + lexical overlap rerank)  
+- Knowledge graph edge construction from citation and similarity signals  
+- Configurable step skipping in the pipeline for fast iterative reruns
 
 ## Architecture
 
 MindMap follows a layered retrieval-and-reasoning architecture designed for scalable literature exploration.
 
 ### 1. Data Ingestion Layer
-Paper metadata and content are collected from external sources and stored in append-only **Bronze tables** to preserve raw inputs.  
-Normalization, deduplication, and feature preparation produce structured **Silver tables** used by downstream components.
+Paper metadata is ingested from Semantic Scholar and arXiv into `BRONZE_PAPERS` as raw JSON payloads for traceability and reprocessing. Reruns do not duplicate ingestion.
+Transformation normalizes Bronze records into `SILVER_PAPERS`, with enrichment such as Semantic Scholar IDs and extracted metadata fields.  
 
 ### 2. Representation Layer
-Papers and queries are converted into vector representations using transformer-based embedding models.  
-Embeddings are versioned and stored alongside metadata to support reproducible experiments and retrieval consistency.
+The embedding workers generate paper-level vectors and chunk-level vectors, storing them directly in Silver tables for retrieval and graph construction.
 
 ### 3. Retrieval Layer
-Given a user query, the system performs semantic candidate generation via vector similarity search.  
-This stage prioritizes recall and produces a manageable set of relevant papers.
+Online retrieval supports three paths: related-paper lookup, free-text semantic search, and chunk-level retrieval for RAG.  
+Retrieval uses vector similarity in Snowflake and supports configurable thresholds, candidate pool sizes, and top-k output.
 
 ### 4. Ranking & Reasoning Layer
-Candidate papers are reranked using a combination of similarity signals, metadata features, and optional LLM-assisted reasoning.  
-This stage focuses on precision and contextual relevance.
+Ranking is currently a lightweight hybrid strategy that blends vector similarity with token-overlap signals for query search.  
+Reasoning helpers and prompt templates exist for higher-level analysis/summarization workflows, but the core retrieval path is deterministic and data-driven.
 
 ### 5. Graph Construction Layer
-Selected papers are organized into a lightweight graph that captures relationships such as topical similarity, shared authorship, or citation structure.  
-The graph forms the basis of the mind map visualization.
+The graph worker materializes `GOLD_PAPER_RELATIONSHIPS` edges from two concrete signals in Silver: citation links and cached similar-paper neighbors.  
+Edges are deduplicated and merged to keep relationship data incremental and consistent across reruns.
 
 ### 6. Serving Layer
-API endpoints orchestrate embedding, retrieval, ranking, and graph generation at request time.  
-Heavy processing is handled asynchronously, enabling responsive interaction in the UI.
+Heavy pipeline stages run as Modal jobs through the orchestrator (`app/main.py`) with per-step skip flags for partial reruns. 
 
 ### 7. Infrastructure Layer
-Compute, storage, and environment configuration are managed through a serverless architecture with reproducible provisioning, allowing the system to scale while remaining easy to deploy.
+Snowflake stores Bronze/Silver/Gold data and vectors, while Terraform provisions and manages the database resources/environment setup.  
+Modal provides remote execution for workers, and secrets are managed via Modal Secret resources for secure runtime credentials.
 
 
 ## Tech Stack

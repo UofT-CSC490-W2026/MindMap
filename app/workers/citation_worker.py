@@ -1,6 +1,5 @@
 import modal
 from typing import Dict, Any
-from app.utils.snowflake_utils import connect_snowflake
 
 image = (
     modal.Image.debian_slim(python_version="3.10")

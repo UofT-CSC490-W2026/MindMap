@@ -1,12 +1,19 @@
-import os
+from app.utils import connect_to_snowflake
 
-def _connect_snowflake():
-    import snowflake.connector
 
-    return snowflake.connector.connect(
-        account=os.environ["SNOWFLAKE_ACCOUNT"],
-        user=os.environ["SNOWFLAKE_USER"],
-        password=os.environ["SNOWFLAKE_PASSWORD"],
-        database='MINDMAP_DB', warehouse='MINDMAP_WH',
-        schema='PUBLIC'
-    )
+def _connect_snowflake(database: str | None = None, schema: str | None = None):
+    kwargs = {}
+    if database is not None:
+        kwargs["database"] = database
+    if schema is not None:
+        kwargs["schema"] = schema
+    return connect_to_snowflake(**kwargs)
+
+
+def connect_snowflake(database: str | None = None, schema: str | None = None):
+    kwargs = {}
+    if database is not None:
+        kwargs["database"] = database
+    if schema is not None:
+        kwargs["schema"] = schema
+    return connect_to_snowflake(**kwargs)

@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from app.utils.snowflake_utils import _connect_snowflake
+from app.utils import connect_to_snowflake
 
 
 api = FastAPI(title="MindMap API", version="0.1.0")
@@ -31,7 +31,7 @@ def _fetch_papers_by_ids(paper_ids: List[str]) -> List[Dict[str, Any]]:
     if not paper_ids:
         return []
 
-    conn = _connect_snowflake()
+    conn = connect_to_snowflake()
     cur = conn.cursor()
     try:
         values_sql = ", ".join(["(%s)"] * len(paper_ids))

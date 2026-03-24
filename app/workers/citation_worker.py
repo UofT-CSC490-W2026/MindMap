@@ -1,8 +1,7 @@
 from typing import Dict, Any
-from app.utils.snowflake_utils import connect_snowflake
-from app.utils.modal_config import app_ml, image_citation, secret_snowflake
+from config import app, image_citation, snowflake_secret
 
-@app_ml.function(image=image_citation, secrets=[secret_snowflake], timeout=60 * 10)
+@app.function(image=image_citation, secrets=[snowflake_secret], timeout=60 * 10)
 def get_citations(arxiv_id: str, max_refs: int = 200) -> Dict[str, Any]:
     """
     arXiv-based reference parsing:

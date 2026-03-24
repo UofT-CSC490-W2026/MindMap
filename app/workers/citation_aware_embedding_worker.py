@@ -1,8 +1,9 @@
 from typing import List, Dict, Any, Tuple
 import math
+import re
 
-from app.utils.snowflake_utils import _connect_snowflake
-from app.utils.modal_config import app_ml, image_citation_aware, secret_snowflake
+from config import app, DATABASE, SCHEMA, image_citation_aware, snowflake_secret
+from utils import connect_to_snowflake
 from .citation_worker import get_citations  # your Modal function
 # NOTE: importing Modal functions across files is okay if both are in the same app name
 
@@ -56,15 +57,29 @@ def _upsert_ca_embedding(cur, paper_id: str, model_name: str, alpha: float, emb:
     )
 
 
-def _insert_references(cur, paper_id: str, arxiv_id: str, refs: List[Dict[str, Any]]):
-    # Simple insert; for A2 it’s fine if duplicates happen occasionally.
-    for i, r in enumerate(refs):
+def _extract_ref_arxiv_id(ref) -> str | None:
+    if isinstance(ref, dict):
+        return ref.get("ref_arxiv_id")
+    if not isinstance(ref, str):
+        return None
+    match = re.search(r"\b(\d{4}\.\d{4,5})(?:v\d+)?\b", ref)
+    return match.group(1) if match else None
+
+
+def _extract_ref_text(ref) -> str:
+    if isinstance(ref, dict):
+        return ref.get("ref_text") or ""
+    return str(ref)
+
+
+def _insert_references(cur, paper_id: str, arxiv_id: str, refs: List[Any]):
+    for i, ref in enumerate(refs):
         cur.execute(
             """
             INSERT INTO GOLD_REFERENCES(paper_id, arxiv_id, ref_index, ref_text, ref_arxiv_id)
             VALUES (%s, %s, %s, %s, %s)
             """,
-            (paper_id, arxiv_id, int(i), r.get("ref_text"), r.get("ref_arxiv_id")),
+            (paper_id, arxiv_id, int(i), _extract_ref_text(ref), _extract_ref_arxiv_id(ref)),
         )
 
 
@@ -82,10 +97,10 @@ def _resolve_ref_paper_ids(cur, ref_arxiv_ids: List[str]) -> List[str]:
     cur.execute(
         f"""
         WITH refs(arxiv_id) AS (SELECT column1 FROM VALUES {values_sql})
-        SELECT TO_VARCHAR(s.paper_id) AS paper_id
+        SELECT TO_VARCHAR(s."id") AS paper_id
         FROM refs r
         JOIN SILVER_PAPERS s
-          ON s.arxiv_id = r.arxiv_id
+          ON s."arxiv_id" = r.arxiv_id
         """,
         ref_arxiv_ids,
     )
@@ -99,10 +114,11 @@ def _fetch_embeddings(cur, paper_ids: List[str]) -> List[List[float]]:
     cur.execute(
         f"""
         WITH ids(paper_id) AS (SELECT column1 FROM VALUES {values_sql})
-        SELECT e.embedding
+        SELECT s."embedding"
         FROM ids i
-        JOIN PAPER_EMBEDDINGS e
-          ON e.paper_id = i.paper_id
+        JOIN SILVER_PAPERS s
+          ON TO_VARCHAR(s."id") = i.paper_id
+        WHERE s."embedding" IS NOT NULL
         """,
         paper_ids,
     )
@@ -111,12 +127,14 @@ def _fetch_embeddings(cur, paper_ids: List[str]) -> List[List[float]]:
     return [list(r[0]) for r in rows]
 
 
-@app_ml.function(image=image_citation_aware, secrets=[secret_snowflake], timeout=60 * 30)
+@app.function(image=image_citation_aware, secrets=[snowflake_secret], timeout=60 * 30)
 def run_citation_aware_embedding_batch(
     limit: int = 50,
     alpha: float = 0.8,
     base_model: str = "sentence-transformers/all-MiniLM-L6-v2",
     max_refs: int = 80,
+    database: str = DATABASE,
+    schema: str = SCHEMA,
 ) -> Dict[str, Any]:
     """
     For each paper in SILVER_PAPERS (up to limit):
@@ -130,7 +148,7 @@ def run_citation_aware_embedding_batch(
     import numpy as np
     from sentence_transformers import SentenceTransformer
 
-    conn = _connect_snowflake()
+    conn = connect_to_snowflake(database=database, schema=schema)
     cur = conn.cursor()
     try:
         _ensure_tables(cur)
@@ -139,16 +157,16 @@ def run_citation_aware_embedding_batch(
         cur.execute(
             f"""
             SELECT
-              TO_VARCHAR(s.paper_id) AS paper_id,
-              s.arxiv_id,
-              s.title,
-              s.abstract
+              TO_VARCHAR(s."id") AS paper_id,
+              s."arxiv_id",
+              s."title",
+              s."abstract"
             FROM SILVER_PAPERS s
             LEFT JOIN PAPER_EMBEDDINGS_CA ca
-              ON ca.paper_id = TO_VARCHAR(s.paper_id)
+              ON ca.paper_id = TO_VARCHAR(s."id")
             WHERE ca.paper_id IS NULL
-              AND s.abstract IS NOT NULL
-              AND s.arxiv_id IS NOT NULL
+              AND s."abstract" IS NOT NULL
+              AND s."arxiv_id" IS NOT NULL
             LIMIT {int(limit)}
             """
         )
@@ -177,7 +195,7 @@ def run_citation_aware_embedding_batch(
             # store refs for A2 evidence
             _insert_references(cur, paper_id, arxiv_id, refs)
 
-            ref_arxiv_ids = [r.get("ref_arxiv_id") for r in refs if r.get("ref_arxiv_id")]
+            ref_arxiv_ids = [ref_id for ref_id in (_extract_ref_arxiv_id(ref) for ref in refs) if ref_id]
             if not ref_arxiv_ids:
                 skipped_no_refs += 1
                 # still store a CA embedding identical to self (optional), or skip

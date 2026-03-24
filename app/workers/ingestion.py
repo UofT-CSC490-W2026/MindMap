@@ -3,7 +3,6 @@ import json
 from app.utils.snowflake_utils import connect_snowflake
 from app.utils.modal_config import app_ingestion, image_ingestion, secret_mindmap
 
-# Credentials should be stored in a Modal Secret
 @app_ingestion.function(image=image_ingestion, secrets=[secret_mindmap])
 def ingest_from_arxiv(query: str, max_results: int = 5):
     """

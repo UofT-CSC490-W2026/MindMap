@@ -5,6 +5,7 @@ MindMap is an AI-assisted system for exploring academic literature through seman
 ## Table of Contents
 
 - [Installation / Getting Started](#installation--getting-started)
+- [Codebase Overview](#codebase-overview)
 - [Pipeline Overview](#pipeline-overview)
 - [Features](#features)
 - [Architecture](#architecture)
@@ -59,16 +60,100 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
+Modal + Snowflake credential setup:
+
+```bash
+# 1) authenticate Modal (one-time)
+modal setup
+
+# 2) export Snowflake credentials in your shell
+export SNOWFLAKE_ACCOUNT="SCZSGQN-SG49598"
+export SNOWFLAKE_USER="hclover2003"
+export SNOWFLAKE_PASSWORD="mindMap20262026"
+
+# 3) create/update Modal secrets used by workers
+
+modal secret create snowflake-creds \
+  SNOWFLAKE_ACCOUNT="$SNOWFLAKE_ACCOUNT" \
+  SNOWFLAKE_USER="$SNOWFLAKE_USER" \
+  SNOWFLAKE_PASSWORD="$SNOWFLAKE_PASSWORD" \
+  --force
+
+# 4) verify secrets exist
+modal secret list
+```
+
+Terraform setup (Snowflake infrastructure):
+
+```bash
+# from repo root
+cd terraform
+
+# 1) initialize terraform
+terraform init
+
+# 2) choose workspace
+# use dev for local testing
+terraform workspace select dev || terraform workspace new dev
+
+# (use prod only when deploying production resources)
+# terraform workspace select prod
+
+# 3) define variables
+export TF_VAR_snowflake_account="$SNOWFLAKE_ACCOUNT"
+export TF_VAR_snowflake_user="$SNOWFLAKE_USER"
+export TF_VAR_snowflake_password="$SNOWFLAKE_PASSWORD"
+
+# 4) 
+# preview changes
+terraform plan
+
+# or apply changes
+terraform apply
+```
+
 Example run:
 
 ```bash
+QUERY="model quantization"
+
 # end-to-end run
-python -m app.main pipeline --query "graph neural networks" --max-results 10 --embed-limit 200
+python -m app.main pipeline --query "$QUERY" --max-results 10 --embed-limit 20
 
 # you can also run individual steps
-python -m app.main ingest --query "graph neural networks" --max-results 10
+python -m app.main ingest --query "$QUERY" --max-results 10
 python -m app.main transform
 python -m app.main embed --limit 200
+```
+
+## Codebase Overview
+
+```text
+MindMap/
+├── app/                                 # Backend code and pipeline orchestration
+│   ├── main.py                          #   CLI entry point (pipeline, ingest, transform, embed)
+│   ├── create.sql                       #   Snowflake schema/table setup SQL
+│   ├── workers/                         #   Modal worker functions for each pipeline stage
+│   │   ├── ingestion.py                 #     arXiv ingestion into Bronze
+│   │   ├── transformation.py            #     Bronze -> Silver transformation
+│   │   ├── embedding_worker.py          #     baseline embedding generation
+│   │   ├── semantic_search.py           #     vector similarity retrieval
+│   │   ├── citation_worker.py           #     citation/reference extraction from PDFs
+│   │   └── citation_aware_embedding_worker.py  # citation-aware embedding pipeline
+│   └── utils/
+│       ├── snowflake_utils.py           #   Snowflake connection helpers
+│       └── modal_config.py              #   Shared Modal app/image/secret config
+├── react/                               # Frontend UI (Vite + React + TypeScript)
+│   ├── src/
+│   │   ├── App.tsx                      #   Main graph UI
+│   │   └── mock/graphData.ts            #   Current mock graph data source
+│   └── package.json                     #   Frontend scripts and dependencies
+├── terraform/                           # Infrastructure as Code
+│   ├── main.tf                          #   Core infrastructure resources
+│   ├── providers.tf                     #   Terraform providers
+│   └── variables.tf                     #   Input variables
+├── assignments/                         # Course milestone/assignment artifacts
+└── README.md                            # Project documentation
 ```
 
 ## Pipeline Overview

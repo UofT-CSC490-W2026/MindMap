@@ -1,0 +1,16 @@
+[
+  { "source_paper_id": 1, "target_paper_id": 2, "relationship_type": "CITES", "strength": 0.95 },
+  { "source_paper_id": 1, "target_paper_id": 3, "relationship_type": "SIMILAR", "strength": 0.87 },
+  { "source_paper_id": 1, "target_paper_id": 6, "relationship_type": "CITES", "strength": 0.70 },
+  { "source_paper_id": 2, "target_paper_id": 4, "relationship_type": "CITES", "strength": 0.78 },
+  { "source_paper_id": 2, "target_paper_id": 5, "relationship_type": "SIMILAR", "strength": 0.69 },
+  { "source_paper_id": 2, "target_paper_id": 6, "relationship_type": "CITES", "strength": 0.80 },
+  { "source_paper_id": 3, "target_paper_id": 4, "relationship_type": "SIMILAR", "strength": 0.82 },
+  { "source_paper_id": 3, "target_paper_id": 5, "relationship_type": "CITES", "strength": 0.75 },
+  { "source_paper_id": 4, "target_paper_id": 5, "relationship_type": "CITES", "strength": 0.91 },
+  { "source_paper_id": 6, "target_paper_id": 8, "relationship_type": "CITES", "strength": 0.85 },
+  { "source_paper_id": 7, "target_paper_id": 8, "relationship_type": "CITES", "strength": 0.90 },
+  { "source_paper_id": 9, "target_paper_id": 10, "relationship_type": "SIMILAR", "strength": 0.60 },
+  { "source_paper_id": 10, "target_paper_id": 2, "relationship_type": "CITES", "strength": 0.88 },
+  { "source_paper_id": 10, "target_paper_id": 1, "relationship_type": "CITES", "strength": 0.72 }
+]

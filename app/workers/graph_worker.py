@@ -134,7 +134,13 @@ def build_knowledge_graph(paper_id: int = None, database: str = DATABASE):
         papers = _fetch_papers(cur, paper_id, database=database)
         edges: List[Tuple[int, int, str, float]] = []
 
+        print(f"Processing {len(papers)} papers from SILVER to build relationships in GOLD...")
+
         for pid, citations, similar_ids in papers:
+            print("----------------------------------------")
+            print(f"paper {pid}")
+            print(f"  citations: {citations}")
+            print(f"  similar_ids: {similar_ids}")
             for target_id in _citation_targets(cur, _normalize_json_list(citations), database=database):
                 edges.append((int(pid), target_id, "CITES", 1.0))
 

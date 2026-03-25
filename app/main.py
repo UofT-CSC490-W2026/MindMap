@@ -24,7 +24,7 @@ All functions execute remotely in Modal containers.
 """
 
 from config import app, DATABASE
-from workers.ingestion import ingest_from_arxiv, ingest_from_semantic_scholar
+from workers.ingestion import ingest_from_arxiv, ingest_from_openalex, ingest_from_semantic_scholar
 from workers.transformation import main as transform_main, backfill_missing_ss_ids
 from workers.embedding_worker import run_embedding_batch, backfill_similar_ids, run_chunk_embedding_batch
 from workers.chunking_worker import chunk_papers
@@ -69,6 +69,13 @@ def pipeline(
         if source == "semantic_scholar":
             print("Step 1: Ingesting papers from Semantic Scholar...")
             ingest_from_semantic_scholar.remote(
+                query=query,
+                max_results=max_results,
+                database=database,
+            )
+        elif source == "openalex":
+            print("Step 1: Ingesting papers from OpenAlex...")
+            ingest_from_openalex.remote(
                 query=query,
                 max_results=max_results,
                 database=database,

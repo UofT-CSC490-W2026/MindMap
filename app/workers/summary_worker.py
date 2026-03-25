@@ -12,41 +12,40 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
 from utils import connect_to_snowflake
-from config import app, llm_image, openai_secret, snowflake_secret, DATABASE, SCHEMA, qualify_table
+from config import app, llm_image, openai_secret, snowflake_secret, DATABASE, qualify_table
 from services.llm_client import LLMClient
 from services.summary_schema import PaperSummary, SummaryContext
 
 logger = logging.getLogger(__name__)
 
 
-def _papers_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("SILVER_PAPERS", database=database, schema=schema)
+def _papers_table(database: str = DATABASE) -> str:
+    return qualify_table("SILVER_PAPERS", database=database)
 
 
-def _chunks_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("SILVER_PAPER_CHUNKS", database=database, schema=schema)
+def _chunks_table(database: str = DATABASE) -> str:
+    return qualify_table("SILVER_PAPER_CHUNKS", database=database)
 
 
-def _summaries_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("GOLD_PAPER_SUMMARIES", database=database, schema=schema)
+def _summaries_table(database: str = DATABASE) -> str:
+    return qualify_table("GOLD_PAPER_SUMMARIES", database=database)
 
 
-def _evidence_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("GOLD_SUMMARY_EVIDENCE", database=database, schema=schema)
+def _evidence_table(database: str = DATABASE) -> str:
+    return qualify_table("GOLD_SUMMARY_EVIDENCE", database=database)
 
 
 def _fetch_unchunked_papers(
     cur,
     database: str = DATABASE,
-    schema: str = SCHEMA,
     limit: int = 100,
 ) -> List[Dict[str, Any]]:
     """
     Fetch papers that do not yet have summaries.
     Returns papers with both id and basic metadata.
     """
-    papers = _papers_table(database=database, schema=schema)
-    summaries = _summaries_table(database=database, schema=schema)
+    papers = _papers_table(database=database)
+    summaries = _summaries_table(database=database)
     
     cur.execute(
         f"""
@@ -67,7 +66,6 @@ def _fetch_paper_chunks(
     cur,
     paper_id: int,
     database: str = DATABASE,
-    schema: str = SCHEMA,
     limit: int = 18,
     max_context_chars: int = 32000,
 ) -> List[Dict[str, Any]]:
@@ -75,7 +73,7 @@ def _fetch_paper_chunks(
     Fetch a bounded, prioritized chunk set for summary generation.
     This keeps LLM context size under control for long papers.
     """
-    chunks = _chunks_table(database=database, schema=schema)
+    chunks = _chunks_table(database=database)
     
     cur.execute(
         f"""
@@ -137,10 +135,9 @@ def _insert_summary(
     model_name: str = "gpt-4o-mini",
     prompt_version: str = "v1",
     database: str = DATABASE,
-    schema: str = SCHEMA,
 ) -> None:
     """Write summary to GOLD_PAPER_SUMMARIES table."""
-    summaries = _summaries_table(database=database, schema=schema)
+    summaries = _summaries_table(database=database)
     summary_json = json.dumps(summary.to_dict())
 
     cur.execute(
@@ -173,7 +170,6 @@ def _insert_evidence(
     paper_id: int,
     chunk_ids: List[int],
     database: str = DATABASE,
-    schema: str = SCHEMA,
 ) -> None:
     """
     Write evidence mapping from summary fields to chunks.
@@ -189,7 +185,7 @@ def _insert_evidence(
         logger.debug(f"No chunks found for paper {paper_id}, skipping evidence")
         return
     
-    evidence = _evidence_table(database=database, schema=schema)
+    evidence = _evidence_table(database=database)
 
     # Rerunnable behavior: replace old evidence for this paper.
     cur.execute(
@@ -236,7 +232,6 @@ def generate_paper_summary(
     prompt_version: str = "v1",
     force: bool = False,
     database: str = DATABASE,
-    schema: str = SCHEMA,
 ) -> Dict[str, Any]:
     """
     Generate a structured summary for a single paper.
@@ -247,18 +242,17 @@ def generate_paper_summary(
         prompt_version: Prompt template version
         force: If True, overwrite existing summary; otherwise skip
         database: Snowflake database
-        schema: Snowflake schema
         
     Returns:
         Dictionary with status, summary, and metadata
     """
-    conn = connect_to_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
     
     try:
         # Check if summary already exists
         if not force:
-            summaries = _summaries_table(database=database, schema=schema)
+            summaries = _summaries_table(database=database)
             cur.execute(
                 f"""
                 SELECT paper_id FROM {summaries} WHERE paper_id = %s LIMIT 1
@@ -274,7 +268,7 @@ def generate_paper_summary(
                 }
         
         # Fetch paper metadata
-        papers = _papers_table(database=database, schema=schema)
+        papers = _papers_table(database=database)
         cur.execute(
             f"""
             SELECT id, title, abstract FROM {papers} WHERE id = %s
@@ -299,7 +293,6 @@ def generate_paper_summary(
             cur,
             paper_id=paper_id,
             database=database,
-            schema=schema,
         )
         
         if not chunk_rows:
@@ -361,7 +354,6 @@ def generate_paper_summary(
             model_name=model_name,
             prompt_version=prompt_version,
             database=database,
-            schema=schema,
         )
         
         # Insert evidence
@@ -370,7 +362,6 @@ def generate_paper_summary(
             paper_id=paper_id,
             chunk_ids=chunk_ids,
             database=database,
-            schema=schema,
         )
         
         conn.commit()
@@ -414,7 +405,6 @@ def batch_summarize_papers(
     model_name: str = "gpt-4o-mini",
     prompt_version: str = "v1",
     database: str = DATABASE,
-    schema: str = SCHEMA,
 ) -> Dict[str, Any]:
     """
     Generate summaries for all unsummarized papers.
@@ -424,12 +414,11 @@ def batch_summarize_papers(
         model_name: LLM model to use
         prompt_version: Prompt template version
         database: Snowflake database
-        schema: Snowflake schema
         
     Returns:
         Summary statistics of the batch run
     """
-    conn = connect_to_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
     
     try:
@@ -437,7 +426,6 @@ def batch_summarize_papers(
         papers_to_summarize = _fetch_unchunked_papers(
             cur,
             database=database,
-            schema=schema,
             limit=limit,
         )
         
@@ -469,7 +457,6 @@ def batch_summarize_papers(
                     model_name=model_name,
                     prompt_version=prompt_version,
                     database=database,
-                    schema=schema,
                 )
                 
                 if result["status"] == "ok":

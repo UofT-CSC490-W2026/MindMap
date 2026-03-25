@@ -74,9 +74,9 @@ def get_related_papers(
         if not force_refresh:
             cur.execute(
                 f"""
-                SELECT "similar_embeddings_ids"
+                SELECT similar_embeddings_ids
                 FROM {silver}
-                WHERE "id" = %s
+                WHERE id = %s
                 """,
                 (int(paper_id),),
             )
@@ -86,8 +86,8 @@ def get_related_papers(
                 values_sql = ", ".join(["(%s)"] * len(cached_ids))
                 cur.execute(
                     f"""
-                    WITH ids("id") AS (SELECT column1 FROM VALUES {values_sql})
-                    SELECT s."id", s."arxiv_id", s."title"
+                    WITH ids(id) AS (SELECT column1 FROM VALUES {values_sql})
+                    SELECT s.id, s.arxiv_id, s.title
                     FROM ids
                     JOIN {silver} s
                                             ON s.id = ids.id
@@ -116,7 +116,7 @@ def get_related_papers(
         cur.execute(
             f"""
             WITH q AS (
-                            SELECT "embedding" AS qvec
+                            SELECT embedding AS qvec
               FROM {silver}
                             WHERE id = %s
                                 AND embedding IS NOT NULL
@@ -146,7 +146,6 @@ def get_related_papers(
                 "score": float(r[4]),
                 "source": "fallback",
                 "database": database,
-                "schema": schema,
             }
             for r in rows
         ]

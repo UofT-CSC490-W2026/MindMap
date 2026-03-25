@@ -30,6 +30,24 @@ def _chunks_table(database: str = DATABASE) -> str:
     return qualify_table("SILVER_PAPER_CHUNKS", database=database)
 
 
+def _quote_ident(identifier: str) -> str:
+    escaped = str(identifier).replace('"', '""')
+    return f'"{escaped}"'
+
+
+def _resolve_table_columns(cur, table_name: str) -> dict[str, str]:
+    cur.execute(f"DESC TABLE {table_name}")
+    columns = [row[0] for row in cur.fetchall() if row and row[0]]
+    return {str(name).lower(): _quote_ident(str(name)) for name in columns}
+
+
+def _require_columns(column_map: dict[str, str], required: list[str], table_name: str) -> dict[str, str]:
+    missing = [name for name in required if name not in column_map]
+    if missing:
+        raise RuntimeError(f"Missing required columns in {table_name}: {missing}")
+    return {name: column_map[name] for name in required}
+
+
 def _estimate_word_count(text: Optional[str]) -> int:
     """Rough word count estimate for splitting logic."""
     if not text:
@@ -184,24 +202,34 @@ def _fetch_unchunked_papers(cur, database: str = DATABASE, limit: int = 100) -> 
     """
     silver = _silver_table(database=database)
     sections = _sections_table(database=database)
+    silver_cols = _require_columns(
+        _resolve_table_columns(cur, silver),
+        ["id", "arxiv_id", "title", "abstract", "conclusion", "full_text"],
+        silver,
+    )
+    section_cols = _require_columns(
+        _resolve_table_columns(cur, sections),
+        ["paper_id", "section_id"],
+        sections,
+    )
 
     cur.execute(
         f"""
         SELECT
-          sp.id,
-          sp.arxiv_id,
-          sp.title,
-          sp.abstract,
-          sp.conclusion,
-          sp.full_text
+            sp.{silver_cols["id"]} AS id,
+            sp.{silver_cols["arxiv_id"]} AS arxiv_id,
+            sp.{silver_cols["title"]} AS title,
+            sp.{silver_cols["abstract"]} AS abstract,
+            sp.{silver_cols["conclusion"]} AS conclusion,
+            sp.{silver_cols["full_text"]} AS full_text
         FROM {silver} sp
         LEFT JOIN {sections} sec
-          ON sec.paper_id = sp.id
-        WHERE sec.section_id IS NULL
+            ON sec.{section_cols["paper_id"]} = sp.{silver_cols["id"]}
+        WHERE sec.{section_cols["section_id"]} IS NULL
           AND (
-            (sp.full_text IS NOT NULL AND LENGTH(TRIM(sp.full_text)) > 0)
-            OR sp.abstract IS NOT NULL
-            OR sp.conclusion IS NOT NULL
+            (sp.{silver_cols["full_text"]} IS NOT NULL AND LENGTH(TRIM(sp.{silver_cols["full_text"]})) > 0)
+            OR sp.{silver_cols["abstract"]} IS NOT NULL
+            OR sp.{silver_cols["conclusion"]} IS NOT NULL
           )
         LIMIT {int(limit)}
         """
@@ -225,23 +253,33 @@ def _insert_section_and_chunks(
     """
     sections = _sections_table(database=database)
     chunks = _chunks_table(database=database)
+    section_cols = _require_columns(
+        _resolve_table_columns(cur, sections),
+        ["section_id", "paper_id", "section_name", "section_order", "content", "token_estimate"],
+        sections,
+    )
+    chunk_cols = _require_columns(
+        _resolve_table_columns(cur, chunks),
+        ["paper_id", "section_id", "chunk_index", "chunk_text", "token_estimate", "chunk_type"],
+        chunks,
+    )
 
     word_count = _estimate_word_count(content)
 
     cur.execute(
         f"""
         INSERT INTO {sections}
-        (paper_id, section_name, section_order, content, token_estimate)
+        ({section_cols["paper_id"]}, {section_cols["section_name"]}, {section_cols["section_order"]}, {section_cols["content"]}, {section_cols["token_estimate"]})
         VALUES (%s, %s, %s, %s, %s)
         """,
         (int(paper_id), section_name, int(section_index), content, int(word_count)),
     )
     cur.execute(
         f"""
-        SELECT section_id
+        SELECT {section_cols["section_id"]}
         FROM {sections}
-        WHERE paper_id = %s AND section_name = %s
-        ORDER BY section_id DESC
+        WHERE {section_cols["paper_id"]} = %s AND {section_cols["section_name"]} = %s
+        ORDER BY {section_cols["section_id"]} DESC
         LIMIT 1
         """,
         (int(paper_id), section_name),
@@ -281,7 +319,7 @@ def _insert_section_and_chunks(
             cur.executemany(
                 f"""
                 INSERT INTO {chunks}
-                (paper_id, section_id, chunk_index, chunk_text, token_estimate, chunk_type)
+                ({chunk_cols["paper_id"]}, {chunk_cols["section_id"]}, {chunk_cols["chunk_index"]}, {chunk_cols["chunk_text"]}, {chunk_cols["token_estimate"]}, {chunk_cols["chunk_type"]})
                 VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 batch_to_insert,

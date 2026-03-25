@@ -2,6 +2,7 @@ import re
 import threading
 import time
 import os
+import random
 from typing import Any, Dict, List, Optional
 from config import app, image, snowflake_secret, semantic_scholar_secret, DATABASE, qualify_table
 from utils import connect_to_snowflake
@@ -10,8 +11,23 @@ from utils import connect_to_snowflake
 _SS_MIN_INTERVAL_SECONDS = 1.05
 _ss_lock = threading.Lock()
 _ss_last_request_ts = 0.0
+_ARXIV_MIN_INTERVAL_SECONDS = 1.25
+_arxiv_lock = threading.Lock()
+_arxiv_last_request_ts = 0.0
 MAX_FULL_TEXT_CHARS = 350000
 FULL_TEXT_PAGE_LIMIT = 80
+
+
+def _retry_delay_from_response(response, attempt: int, base: float = 1.5, cap: float = 20.0) -> float:
+    retry_after = None
+    if response is not None:
+        retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return min(cap, max(0.0, float(retry_after)))
+        except (TypeError, ValueError):
+            pass
+    return min(cap, base * (2 ** attempt) + random.uniform(0.0, 0.5))
 
 
 def _ss_get_json(url: str, params: dict | None = None, timeout: float = 20.0):
@@ -31,29 +47,38 @@ def _ss_get_json(url: str, params: dict | None = None, timeout: float = 20.0):
     def _request(req_headers):
         return httpx.get(url, params=params, timeout=timeout, headers=req_headers)
 
-    response = _request(headers)
-    if headers and response.status_code in (401, 403):
-        print("Semantic Scholar key rejected; retrying request without API key.")
-        headers = None
-        response = _request(headers)
+    max_attempts = 4
+    response = None
 
-    if response.status_code == 429:
-        # One retry with additional backoff to keep request pace compliant.
-        time.sleep(2.0)
-        with _ss_lock:
-            now = time.time()
-            wait = _SS_MIN_INTERVAL_SECONDS - (now - _ss_last_request_ts)
-            if wait > 0:
-                time.sleep(wait)
-            _ss_last_request_ts = time.time()
+    for attempt in range(max_attempts):
         response = _request(headers)
 
         if headers and response.status_code in (401, 403):
-            print("Semantic Scholar key rejected after retry; falling back to unauthenticated access.")
-            response = _request(None)
+            print("Semantic Scholar key rejected; retrying request without API key.")
+            headers = None
+            continue
 
-    response.raise_for_status()
-    return response.json()
+        if response.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1:
+            delay = _retry_delay_from_response(response, attempt, base=2.0, cap=30.0)
+            print(f"Semantic Scholar transient error {response.status_code}; retrying in {delay:.2f}s...")
+            time.sleep(delay)
+            continue
+
+        try:
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else "unknown"
+            body = ""
+            if exc.response is not None:
+                body = (exc.response.text or "")[:400]
+            raise RuntimeError(
+                f"Semantic Scholar GET failed (status={status}) for url={url} params={params}. "
+                f"Response body: {body}"
+            ) from None
+
+    status = response.status_code if response is not None else "unknown"
+    raise RuntimeError(f"Semantic Scholar GET failed after retries (status={status}) for url={url}")
 
 
 def _ss_post_json(url: str, payload: dict, params: dict | None = None, timeout: float = 30.0):
@@ -73,33 +98,109 @@ def _ss_post_json(url: str, payload: dict, params: dict | None = None, timeout: 
     def _request(req_headers):
         return httpx.post(url, json=payload, params=params, timeout=timeout, headers=req_headers)
 
-    response = _request(headers)
-    if headers and response.status_code in (401, 403):
-        print("Semantic Scholar key rejected; retrying request without API key.")
-        headers = None
-        response = _request(headers)
+    max_attempts = 4
+    response = None
 
-    if response.status_code == 429:
-        time.sleep(2.0)
-        with _ss_lock:
-            now = time.time()
-            wait = _SS_MIN_INTERVAL_SECONDS - (now - _ss_last_request_ts)
-            if wait > 0:
-                time.sleep(wait)
-            _ss_last_request_ts = time.time()
+    for attempt in range(max_attempts):
         response = _request(headers)
 
         if headers and response.status_code in (401, 403):
-            print("Semantic Scholar key rejected after retry; falling back to unauthenticated access.")
-            response = _request(None)
+            print("Semantic Scholar key rejected; retrying request without API key.")
+            headers = None
+            continue
 
-    response.raise_for_status()
-    return response.json()
+        if response.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1:
+            delay = _retry_delay_from_response(response, attempt, base=2.0, cap=30.0)
+            print(f"Semantic Scholar transient error {response.status_code}; retrying in {delay:.2f}s...")
+            time.sleep(delay)
+            continue
+
+        try:
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else "unknown"
+            body = ""
+            if exc.response is not None:
+                body = (exc.response.text or "")[:400]
+            raise RuntimeError(
+                f"Semantic Scholar POST failed (status={status}) for url={url}. "
+                f"Response body: {body}"
+            ) from None
+
+    status = response.status_code if response is not None else "unknown"
+    raise RuntimeError(f"Semantic Scholar POST failed after retries (status={status}) for url={url}")
+
+
+def _arxiv_get_pdf_bytes(arxiv_id: str, timeout: float = 45.0, max_attempts: int = 5) -> bytes:
+    import httpx
+
+    global _arxiv_last_request_ts
+    pdf_url = f"https://export.arxiv.org/pdf/{arxiv_id}.pdf"
+    response = None
+
+    for attempt in range(max(1, int(max_attempts))):
+        with _arxiv_lock:
+            now = time.time()
+            wait = _ARXIV_MIN_INTERVAL_SECONDS - (now - _arxiv_last_request_ts)
+            if wait > 0:
+                time.sleep(wait)
+            _arxiv_last_request_ts = time.time()
+
+        try:
+            response = httpx.get(pdf_url, follow_redirects=True, timeout=timeout)
+        except httpx.HTTPError as exc:
+            if attempt < max_attempts - 1:
+                delay = min(20.0, 1.5 * (2 ** attempt) + random.uniform(0.0, 0.5))
+                print(f"arXiv PDF request error for {arxiv_id}: {exc}. Retrying in {delay:.2f}s...")
+                time.sleep(delay)
+                continue
+            raise RuntimeError(f"arXiv PDF request failed for {arxiv_id}: {exc}") from None
+
+        if response.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1:
+            delay = _retry_delay_from_response(response, attempt, base=2.0, cap=30.0)
+            print(f"arXiv PDF transient error {response.status_code} for {arxiv_id}; retrying in {delay:.2f}s...")
+            time.sleep(delay)
+            continue
+
+        try:
+            response.raise_for_status()
+            return response.content
+        except httpx.HTTPStatusError:
+            break
+
+    status = response.status_code if response is not None else "unknown"
+    body = (response.text[:300] if response is not None and response.text else "")
+    raise RuntimeError(f"arXiv PDF download failed for {arxiv_id} (status={status}). Body: {body}")
 
 
 def _chunks(seq, n: int):
     for i in range(0, len(seq), n):
         yield seq[i : i + n]
+
+
+def _fetch_ss_batch_rows_resilient(batch_url: str, ids: List[str], params: dict, timeout: float = 30.0):
+    payload = {"ids": ids}
+    try:
+        rows = _ss_post_json(url=batch_url, payload=payload, params=params, timeout=timeout)
+        if isinstance(rows, list):
+            return rows
+        return [None] * len(ids)
+    except Exception as e:
+        if len(ids) <= 1:
+            print(f"Batch metadata fetch failed for single id {ids[0] if ids else '<none>'}: {e}")
+            return [None] * len(ids)
+
+        mid = len(ids) // 2
+        left_ids = ids[:mid]
+        right_ids = ids[mid:]
+        print(
+            f"Batch metadata fetch failed ({len(ids)} ids): {e}. "
+            f"Retrying as smaller batches: {len(left_ids)} + {len(right_ids)}"
+        )
+        left_rows = _fetch_ss_batch_rows_resilient(batch_url=batch_url, ids=left_ids, params=params, timeout=timeout)
+        right_rows = _fetch_ss_batch_rows_resilient(batch_url=batch_url, ids=right_ids, params=params, timeout=timeout)
+        return left_rows + right_rows
 
 
 def _extract_arxiv_id_from_external_ids(external_ids: dict) -> Optional[str]:
@@ -159,12 +260,13 @@ def _fetch_ss_batch_metadata(arxiv_ids: List[str], batch_size: int = 100, relati
 
     output: Dict[str, Dict[str, Any]] = {}
     for batch in _chunks(arxiv_ids, max(1, int(batch_size))):
-        payload = {"ids": [f"ARXIV:{aid}" for aid in batch]}
-        try:
-            rows = _ss_post_json(url=batch_url, payload=payload, params=params, timeout=30.0)
-        except Exception as e:
-            print(f"Batch metadata fetch failed ({len(batch)} ids): {e}")
-            rows = [None] * len(batch)
+        batch_ids = [f"ARXIV:{aid}" for aid in batch]
+        rows = _fetch_ss_batch_rows_resilient(
+            batch_url=batch_url,
+            ids=batch_ids,
+            params=params,
+            timeout=30.0,
+        )
 
         for aid, row in zip(batch, rows):
             if not isinstance(row, dict):
@@ -193,12 +295,13 @@ def _fetch_ss_batch_tldr(arxiv_ids: List[str], batch_size: int = 100) -> Dict[st
 
     output: Dict[str, Dict[str, Any]] = {}
     for batch in _chunks(arxiv_ids, max(1, int(batch_size))):
-        payload = {"ids": [f"ARXIV:{aid}" for aid in batch]}
-        try:
-            rows = _ss_post_json(url=batch_url, payload=payload, params=params, timeout=30.0)
-        except Exception as e:
-            print(f"Batch TLDR fetch failed ({len(batch)} ids): {e}")
-            rows = [None] * len(batch)
+        batch_ids = [f"ARXIV:{aid}" for aid in batch]
+        rows = _fetch_ss_batch_rows_resilient(
+            batch_url=batch_url,
+            ids=batch_ids,
+            params=params,
+            timeout=30.0,
+        )
 
         for aid, row in zip(batch, rows):
             if not isinstance(row, dict):
@@ -218,6 +321,38 @@ def _bronze_papers_table(database: str = DATABASE) -> str:
 
 def _silver_papers_table(database: str = DATABASE) -> str:
     return qualify_table("SILVER_PAPERS", database=database)
+
+
+def _quote_ident(identifier: str) -> str:
+    escaped = str(identifier).replace('"', '""')
+    return f'"{escaped}"'
+
+
+def _resolve_bronze_payload_column(cur, database: str = DATABASE) -> str:
+    bronze_table = _bronze_papers_table(database=database)
+    cur.execute(f"DESC TABLE {bronze_table}")
+    columns = [row[0] for row in cur.fetchall() if row and row[0]]
+
+    for name in columns:
+        if str(name).lower() == "raw_payload":
+            return _quote_ident(str(name))
+
+    raise RuntimeError(
+        f"Could not find raw payload column in {bronze_table}. Columns found: {columns}"
+    )
+
+
+def _resolve_table_columns(cur, table_name: str) -> dict[str, str]:
+    cur.execute(f"DESC TABLE {table_name}")
+    columns = [row[0] for row in cur.fetchall() if row and row[0]]
+    return {str(name).lower(): _quote_ident(str(name)) for name in columns}
+
+
+def _require_columns(column_map: dict[str, str], required: list[str], table_name: str) -> dict[str, str]:
+    missing = [name for name in required if name not in column_map]
+    if missing:
+        raise RuntimeError(f"Missing required columns in {table_name}: {missing}")
+    return {name: column_map[name] for name in required}
 
 
 def _clean_extracted_text(text: str) -> str:
@@ -278,19 +413,16 @@ def _extract_conclusion_from_text(full_text: str) -> str:
 
 @app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret], max_containers=1, timeout=60 * 4)
 def extract_full_text_pdf(arxiv_id: str) -> Dict[str, Any]:
-    import httpx
     import pymupdf
 
-    pdf_url = f"https://export.arxiv.org/pdf/{arxiv_id}.pdf"
     try:
-        response = httpx.get(pdf_url, follow_redirects=True, timeout=45.0)
-        response.raise_for_status()
+        pdf_bytes = _arxiv_get_pdf_bytes(arxiv_id=arxiv_id, timeout=45.0, max_attempts=5)
     except Exception as e:
         print(f"Error downloading PDF for {arxiv_id}: {e}")
         return {"full_text": "", "source": "unavailable", "truncated": False, "pages_processed": 0}
 
     try:
-        doc = pymupdf.open(stream=response.content, filetype="pdf")
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     except Exception as e:
         print(f"Warning: Could not parse PDF for {arxiv_id}: {e}")
         return {"full_text": "", "source": "parse_failed", "truncated": False, "pages_processed": 0}
@@ -396,18 +528,14 @@ def fetch_connections_ss(arxiv_id: str, mode=0):
 # Use PDF parsing to extract references
 @app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret], max_containers=4, timeout=60*2)
 def extract_references_pdf(arxiv_id: str):
-    import httpx
     import fitz 
     import re
-
-    pdf_url = f"https://export.arxiv.org/pdf/{arxiv_id}.pdf"
     
     try:
-        response = httpx.get(pdf_url, follow_redirects=True, timeout=30.0)
-        response.raise_for_status()
+        pdf_bytes = _arxiv_get_pdf_bytes(arxiv_id=arxiv_id, timeout=30.0, max_attempts=5)
         
         try:
-            with fitz.open(stream=response.content, filetype="pdf") as doc:
+            with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
                 full_text = ""
                 # Only look at the very end (last 5 pages)
                 start_page = max(0, len(doc) - 5)
@@ -522,6 +650,25 @@ def transform_to_silver(
 
         conn = connect_to_snowflake(database=database, schema="SILVER")
         cur = conn.cursor()
+        payload_col = _resolve_bronze_payload_column(cur, database=database)
+        silver_table = _silver_papers_table(database=database)
+        silver_cols = _require_columns(
+            _resolve_table_columns(cur, silver_table),
+            [
+                "arxiv_id",
+                "ss_id",
+                "conclusion",
+                "full_text",
+                "full_text_source",
+                "full_text_extracted_at",
+                "tldr",
+                "reference_list",
+                "citation_list",
+                "title",
+                "abstract",
+            ],
+            silver_table,
+        )
 
         try:
             # 3. Dual-Key MERGE Logic
@@ -532,8 +679,8 @@ def transform_to_silver(
                     SELECT 
                         %s as arxiv_id,
                         %s as ss_id,
-                        raw_payload:title::STRING as title,
-                        raw_payload:summary::STRING as abstract,
+                        {payload_col}:title::STRING as title,
+                        {payload_col}:summary::STRING as abstract,
                         %s as conclusion,
                         %s as full_text,
                         %s as full_text_source,
@@ -541,33 +688,45 @@ def transform_to_silver(
                         PARSE_JSON(%s) as reference_list,
                         PARSE_JSON(%s) as citation_list
                     FROM {bronze_papers}
-                    WHERE raw_payload:entry_id::STRING LIKE %s
+                    WHERE {payload_col}:entry_id::STRING LIKE %s
                     LIMIT 1
                 ) source
-                ON target.arxiv_id = source.arxiv_id OR (target.ss_id = source.ss_id AND source.ss_id IS NOT NULL)
+                ON target.{arxiv_id_col} = source.arxiv_id OR (target.{ss_id_col} = source.ss_id AND source.ss_id IS NOT NULL)
                 WHEN MATCHED THEN
                     UPDATE SET 
-                        target.arxiv_id = COALESCE(target.arxiv_id, source.arxiv_id),
-                        target.ss_id = COALESCE(target.ss_id, source.ss_id),
-                        target.conclusion = COALESCE(source.conclusion, target.conclusion),
-                        target.full_text = COALESCE(NULLIF(source.full_text, ''), target.full_text),
-                        target.full_text_source = CASE
+                        target.{arxiv_id_col} = COALESCE(target.{arxiv_id_col}, source.arxiv_id),
+                        target.{ss_id_col} = COALESCE(target.{ss_id_col}, source.ss_id),
+                        target.{conclusion_col} = COALESCE(source.conclusion, target.{conclusion_col}),
+                        target.{full_text_col} = COALESCE(NULLIF(source.full_text, ''), target.{full_text_col}),
+                        target.{full_text_source_col} = CASE
                             WHEN source.full_text IS NOT NULL AND LENGTH(TRIM(source.full_text)) > 0 THEN source.full_text_source
-                            ELSE target.full_text_source
+                            ELSE target.{full_text_source_col}
                         END,
-                        target.full_text_extracted_at = CASE
+                        target.{full_text_extracted_at_col} = CASE
                             WHEN source.full_text IS NOT NULL AND LENGTH(TRIM(source.full_text)) > 0 THEN CURRENT_TIMESTAMP()
-                            ELSE target.full_text_extracted_at
+                            ELSE target.{full_text_extracted_at_col}
                         END,
-                        target.tldr = source.tldr,
-                        target.reference_list = source.reference_list,
-                        target.citation_list = source.citation_list
+                        target.{tldr_col} = source.tldr,
+                        target.{reference_list_col} = source.reference_list,
+                        target.{citation_list_col} = source.citation_list
                 WHEN NOT MATCHED THEN
-                    INSERT (arxiv_id, ss_id, title, abstract, conclusion, full_text, full_text_source, full_text_extracted_at, tldr, reference_list, citation_list)
+                    INSERT ({arxiv_id_col}, {ss_id_col}, {title_col}, {abstract_col}, {conclusion_col}, {full_text_col}, {full_text_source_col}, {full_text_extracted_at_col}, {tldr_col}, {reference_list_col}, {citation_list_col})
                     VALUES (source.arxiv_id, source.ss_id, source.title, source.abstract, source.conclusion, source.full_text, source.full_text_source, CURRENT_TIMESTAMP(), source.tldr, source.reference_list, source.citation_list);
             """.format(
-                silver_papers=_silver_papers_table(database=database),
+                silver_papers=silver_table,
                 bronze_papers=_bronze_papers_table(database=database),
+                payload_col=payload_col,
+                arxiv_id_col=silver_cols["arxiv_id"],
+                ss_id_col=silver_cols["ss_id"],
+                title_col=silver_cols["title"],
+                abstract_col=silver_cols["abstract"],
+                conclusion_col=silver_cols["conclusion"],
+                full_text_col=silver_cols["full_text"],
+                full_text_source_col=silver_cols["full_text_source"],
+                full_text_extracted_at_col=silver_cols["full_text_extracted_at"],
+                tldr_col=silver_cols["tldr"],
+                reference_list_col=silver_cols["reference_list"],
+                citation_list_col=silver_cols["citation_list"],
             ), (
                 arxiv_id,
                 ss_id, 
@@ -599,13 +758,20 @@ def transform_to_silver(
 def get_bronze_worklist(database: str = DATABASE):
     conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
+    payload_col = _resolve_bronze_payload_column(cur, database=database)
+    silver_table = _silver_papers_table(database=database)
+    silver_cols = _require_columns(
+        _resolve_table_columns(cur, silver_table),
+        ["arxiv_id"],
+        silver_table,
+    )
     
     # Get all IDs in Bronze
-    cur.execute(f'SELECT raw_payload:entry_id::STRING FROM {_bronze_papers_table(database=database)}')
+    cur.execute(f'SELECT {payload_col}:entry_id::STRING FROM {_bronze_papers_table(database=database)}')
     rows = cur.fetchall()
     
     # Optional: Filter out papers already in Silver to avoid redundant work
-    cur.execute(f'SELECT arxiv_id FROM {_silver_papers_table(database=database)}')
+    cur.execute(f'SELECT {silver_cols["arxiv_id"]} FROM {silver_table}')
     existing_ids = {row[0] for row in cur.fetchall()}
     cur.close()
     conn.close()
@@ -674,13 +840,18 @@ def backfill_missing_ss_ids(
 
     conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
+    silver_cols = _require_columns(
+        _resolve_table_columns(cur, silver),
+        ["id", "arxiv_id", "ss_id"],
+        silver,
+    )
     try:
         cur.execute(
             f"""
-                        SELECT id, arxiv_id
+                        SELECT {silver_cols["id"]}, {silver_cols["arxiv_id"]}
                         FROM {silver}
-                        WHERE ss_id IS NULL
-                            AND arxiv_id IS NOT NULL
+                        WHERE {silver_cols["ss_id"]} IS NULL
+                            AND {silver_cols["arxiv_id"]} IS NOT NULL
                         LIMIT {int(limit)}
             """
         )
@@ -723,9 +894,9 @@ def backfill_missing_ss_ids(
             cur.executemany(
                 f"""
                 UPDATE {silver}
-                SET ss_id = %s
-                WHERE id = %s
-                  AND ss_id IS NULL
+                                SET {silver_cols["ss_id"]} = %s
+                                WHERE {silver_cols["id"]} = %s
+                                    AND {silver_cols["ss_id"]} IS NULL
                 """,
                 updates,
             )
@@ -760,23 +931,28 @@ def backfill_conclusions_from_tldr(
 
     conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
+    silver_cols = _require_columns(
+        _resolve_table_columns(cur, silver),
+        ["id", "arxiv_id", "tldr", "ss_id"],
+        silver,
+    )
     try:
         if overwrite_existing:
             cur.execute(
                 f"""
-                SELECT id, arxiv_id
+                SELECT {silver_cols["id"]}, {silver_cols["arxiv_id"]}
                 FROM {silver}
-                WHERE arxiv_id IS NOT NULL
+                WHERE {silver_cols["arxiv_id"]} IS NOT NULL
                 LIMIT {int(limit)}
                 """
             )
         else:
             cur.execute(
                 f"""
-                SELECT id, arxiv_id
+                SELECT {silver_cols["id"]}, {silver_cols["arxiv_id"]}
                 FROM {silver}
-                WHERE arxiv_id IS NOT NULL
-                                    AND (tldr IS NULL OR LENGTH(TRIM(tldr)) = 0)
+                WHERE {silver_cols["arxiv_id"]} IS NOT NULL
+                                    AND ({silver_cols["tldr"]} IS NULL OR LENGTH(TRIM({silver_cols["tldr"]})) = 0)
                 LIMIT {int(limit)}
                 """
             )
@@ -810,8 +986,8 @@ def backfill_conclusions_from_tldr(
                 cur.executemany(
                     f"""
                     UPDATE {silver}
-                                        SET tldr = %s
-                    WHERE id = %s
+                                        SET {silver_cols["tldr"]} = %s
+                    WHERE {silver_cols["id"]} = %s
                     """,
                     updates,
                 )
@@ -819,9 +995,9 @@ def backfill_conclusions_from_tldr(
                 cur.executemany(
                     f"""
                     UPDATE {silver}
-                                        SET tldr = %s
-                    WHERE id = %s
-                                            AND (tldr IS NULL OR LENGTH(TRIM(tldr)) = 0)
+                                        SET {silver_cols["tldr"]} = %s
+                    WHERE {silver_cols["id"]} = %s
+                                            AND ({silver_cols["tldr"]} IS NULL OR LENGTH(TRIM({silver_cols["tldr"]})) = 0)
                     """,
                     updates,
                 )
@@ -830,8 +1006,8 @@ def backfill_conclusions_from_tldr(
             cur.executemany(
                 f"""
                 UPDATE {silver}
-                SET ss_id = COALESCE(ss_id, %s)
-                WHERE id = %s
+                SET {silver_cols["ss_id"]} = COALESCE({silver_cols["ss_id"]}, %s)
+                WHERE {silver_cols["id"]} = %s
                 """,
                 ss_id_updates,
             )

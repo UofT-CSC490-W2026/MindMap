@@ -58,17 +58,24 @@ def pipeline(
         # Skip already-run steps
         modal run app/main.py --query "transformers" --max-results 50 --skip-ingestion --skip-transformation
     """
+    safe_query = (query or "").strip()
+    if not skip_ingestion and not safe_query:
+        raise ValueError(
+            "Query cannot be empty. Pass --query with a non-empty topic, "
+            "for example: --query \"transformers\"."
+        )
+
     if not skip_ingestion:
         if source == "semantic_scholar":
             print("Step 1: Ingesting papers from Semantic Scholar...")
             ingest_from_semantic_scholar.remote(
-                query=query,
+                query=safe_query,
                 max_results=max_results,
                 database=database,
             )
         else:
             print("Step 1: Ingesting papers from arXiv...")
-            ingest_from_arxiv.remote(query=query, max_results=max_results, database=database)
+            ingest_from_arxiv.remote(query=safe_query, max_results=max_results, database=database)
     else:
         print("Step 1: Skipped (ingestion already complete)")
     

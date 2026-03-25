@@ -127,7 +127,7 @@ cd /path/to/MindMap
 modal run app/main.py \
   --query "$QUERY" \
   --source semantic_scholar \
-  --max-results 50
+  --max-results 5
 
 # rerun without expensive early stages
 modal run app/main.py \

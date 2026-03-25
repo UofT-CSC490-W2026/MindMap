@@ -9,6 +9,7 @@ Coordinates the complete workflow for building a knowledge graph and RAG-ready e
 4. CHUNKING: Splits papers into semantic sections and chunks for RAG
 5. CHUNK EMBEDDING: Generates embeddings for chunks to enable dense retrieval
 6. KNOWLEDGE GRAPH: Builds semantic relationships between papers
+7. SUMMARIZATION: Generates structured summaries of papers using LLM (optional)
 
 Usage:
     modal run app/main.py --query "transformers" --max-results 100
@@ -29,6 +30,7 @@ from workers.transformation import main as transform_main, backfill_missing_ss_i
 from workers.embedding_worker import run_embedding_batch, backfill_similar_ids, run_chunk_embedding_batch
 from workers.chunking_worker import chunk_papers
 from workers.graph_worker import build_knowledge_graph
+from workers.summary_worker import batch_summarize_papers
 
 @app.local_entrypoint()
 def pipeline(
@@ -47,6 +49,7 @@ def pipeline(
     skip_chunk_embedding: bool = False,
     skip_backfill: bool = False,
     skip_graph: bool = False,
+    skip_summary: bool = True,
 ):
     """
     Full RAG-ready pipeline orchestrator with optional step skipping.
@@ -58,17 +61,24 @@ def pipeline(
         # Skip already-run steps
         modal run app/main.py --query "transformers" --max-results 50 --skip-ingestion --skip-transformation
     """
+    safe_query = (query or "").strip()
+    if not skip_ingestion and not safe_query:
+        raise ValueError(
+            "Query cannot be empty. Pass --query with a non-empty topic, "
+            "for example: --query \"transformers\"."
+        )
+
     if not skip_ingestion:
         if source == "semantic_scholar":
             print("Step 1: Ingesting papers from Semantic Scholar...")
             ingest_from_semantic_scholar.remote(
-                query=query,
+                query=safe_query,
                 max_results=max_results,
                 database=database,
             )
         else:
             print("Step 1: Ingesting papers from arXiv...")
-            ingest_from_arxiv.remote(query=query, max_results=max_results, database=database)
+            ingest_from_arxiv.remote(query=safe_query, max_results=max_results, database=database)
     else:
         print("Step 1: Skipped (ingestion already complete)")
     
@@ -119,5 +129,15 @@ def pipeline(
         build_knowledge_graph.remote(database=database)
     else:
         print("Step 7: Skipped (knowledge graph already complete)")
+    
+    if not skip_summary:
+        print("Step 8: Generating paper summaries with LLM...")
+        batch_summarize_papers.remote(
+            limit=max_results,
+            database=database,
+            schema=schema,
+        )
+    else:
+        print("Step 8: Skipped (paper summaries skipped)")
     
     print("✓ RAG-ready pipeline complete!")

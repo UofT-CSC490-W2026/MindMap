@@ -1,29 +1,11 @@
-import modal
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 import math
 import re
 
-from config import DATABASE, SCHEMA
-from app.utils.snowflake_utils import _connect_snowflake
+from config import app, DATABASE, image_citation_aware, snowflake_secret
+from utils import connect_to_snowflake
 from .citation_worker import get_citations  # your Modal function
 # NOTE: importing Modal functions across files is okay if both are in the same app name
-
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .pip_install(
-        "sentence-transformers==2.7.0",
-        "torch",
-        "snowflake-connector-python[pandas]==3.12.0",
-        "pandas",
-        "requests",
-        "feedparser",
-        "pymupdf",
-        "numpy",
-    )
-)
-
-app = modal.App("mindmap-ml-workers")
-secret = modal.Secret.from_name("mindmap-1")
 
 
 def _l2_normalize(vec: List[float]) -> List[float]:
@@ -32,47 +14,47 @@ def _l2_normalize(vec: List[float]) -> List[float]:
 
 
 def _ensure_tables(cur):
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS PAPER_EMBEDDINGS_CA (
-          paper_id STRING PRIMARY KEY,
-          model_name STRING,
-          embedding VECTOR(FLOAT, 384),
-          alpha FLOAT,
-          updated_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+        cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS PAPER_EMBEDDINGS_CA (
+                    "paper_id" STRING PRIMARY KEY,
+                    "model_name" STRING,
+                    "embedding" VECTOR(FLOAT, 384),
+                    "alpha" FLOAT,
+                    "updated_at" TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+                )
+                """
         )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS GOLD_REFERENCES (
-          paper_id STRING,
-          arxiv_id STRING,
-          ref_index INT,
-          ref_text STRING,
-          ref_arxiv_id STRING,
-          created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+        cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS GOLD_REFERENCES (
+                    "paper_id" STRING,
+                    "arxiv_id" STRING,
+                    "ref_index" INT,
+                    "ref_text" STRING,
+                    "ref_arxiv_id" STRING,
+                    "created_at" TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+                )
+                """
         )
-        """
-    )
 
 
 def _upsert_ca_embedding(cur, paper_id: str, model_name: str, alpha: float, emb: List[float]):
-    cur.execute(
-        """
-        MERGE INTO PAPER_EMBEDDINGS_CA t
-        USING (SELECT %s AS paper_id, %s AS model_name, %s AS embedding, %s AS alpha) s
-        ON t.paper_id = s.paper_id
-        WHEN MATCHED THEN UPDATE SET
-          t.model_name = s.model_name,
-          t.embedding = s.embedding,
-          t.alpha = s.alpha,
-          t.updated_at = CURRENT_TIMESTAMP()
-        WHEN NOT MATCHED THEN INSERT (paper_id, model_name, embedding, alpha)
-        VALUES (s.paper_id, s.model_name, s.embedding, s.alpha)
-        """,
-        (paper_id, model_name, emb, float(alpha)),
-    )
+        cur.execute(
+                """
+                MERGE INTO PAPER_EMBEDDINGS_CA t
+                USING (SELECT %s AS "paper_id", %s AS "model_name", %s AS "embedding", %s AS "alpha") s
+                ON t."paper_id" = s."paper_id"
+                WHEN MATCHED THEN UPDATE SET
+                    t."model_name" = s."model_name",
+                    t."embedding" = s."embedding",
+                    t."alpha" = s."alpha",
+                    t."updated_at" = CURRENT_TIMESTAMP()
+                WHEN NOT MATCHED THEN INSERT ("paper_id", "model_name", "embedding", "alpha")
+                VALUES (s."paper_id", s."model_name", s."embedding", s."alpha")
+                """,
+                (paper_id, model_name, emb, float(alpha)),
+        )
 
 
 def _extract_ref_arxiv_id(ref) -> str | None:
@@ -94,7 +76,7 @@ def _insert_references(cur, paper_id: str, arxiv_id: str, refs: List[Any]):
     for i, ref in enumerate(refs):
         cur.execute(
             """
-            INSERT INTO GOLD_REFERENCES(paper_id, arxiv_id, ref_index, ref_text, ref_arxiv_id)
+            INSERT INTO GOLD_REFERENCES("paper_id", "arxiv_id", "ref_index", "ref_text", "ref_arxiv_id")
             VALUES (%s, %s, %s, %s, %s)
             """,
             (paper_id, arxiv_id, int(i), _extract_ref_text(ref), _extract_ref_arxiv_id(ref)),
@@ -113,14 +95,14 @@ def _resolve_ref_paper_ids(cur, ref_arxiv_ids: List[str]) -> List[str]:
     # Build VALUES list for join
     values_sql = ", ".join(["(%s)"] * len(ref_arxiv_ids))
     cur.execute(
-        f"""
-        WITH refs(arxiv_id) AS (SELECT column1 FROM VALUES {values_sql})
-        SELECT TO_VARCHAR(s."id") AS paper_id
-        FROM refs r
-        JOIN SILVER_PAPERS s
-          ON s."arxiv_id" = r.arxiv_id
-        """,
-        ref_arxiv_ids,
+            f"""
+            WITH refs("arxiv_id") AS (SELECT column1 FROM VALUES {values_sql})
+            SELECT TO_VARCHAR(s."id") AS "paper_id"
+            FROM refs r
+            JOIN SILVER_PAPERS s
+                ON s."arxiv_id" = r."arxiv_id"
+            """,
+            ref_arxiv_ids,
     )
     return [r[0] for r in cur.fetchall()]
 
@@ -130,29 +112,28 @@ def _fetch_embeddings(cur, paper_ids: List[str]) -> List[List[float]]:
         return []
     values_sql = ", ".join(["(%s)"] * len(paper_ids))
     cur.execute(
-        f"""
-        WITH ids(paper_id) AS (SELECT column1 FROM VALUES {values_sql})
-        SELECT s."embedding"
-        FROM ids i
-        JOIN SILVER_PAPERS s
-          ON TO_VARCHAR(s."id") = i.paper_id
-        WHERE s."embedding" IS NOT NULL
-        """,
-        paper_ids,
+            f"""
+            WITH ids("paper_id") AS (SELECT column1 FROM VALUES {values_sql})
+            SELECT s."embedding"
+            FROM ids i
+            JOIN SILVER_PAPERS s
+                ON TO_VARCHAR(s."id") = i."paper_id"
+            WHERE s."embedding" IS NOT NULL
+            """,
+            paper_ids,
     )
     rows = cur.fetchall()
     # Each row[0] is a vector; connector returns it as a Python list-like
     return [list(r[0]) for r in rows]
 
 
-@app.function(image=image, secrets=[secret], timeout=60 * 30)
+@app.function(image=image_citation_aware, secrets=[snowflake_secret], timeout=60 * 30)
 def run_citation_aware_embedding_batch(
     limit: int = 50,
     alpha: float = 0.8,
     base_model: str = "sentence-transformers/all-MiniLM-L6-v2",
     max_refs: int = 80,
     database: str = DATABASE,
-    schema: str = SCHEMA,
 ) -> Dict[str, Any]:
     """
     For each paper in SILVER_PAPERS (up to limit):
@@ -166,27 +147,27 @@ def run_citation_aware_embedding_batch(
     import numpy as np
     from sentence_transformers import SentenceTransformer
 
-    conn = _connect_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="GOLD")
     cur = conn.cursor()
     try:
         _ensure_tables(cur)
 
         # Pick papers that do NOT yet have citation-aware embedding
         cur.execute(
-            f"""
-            SELECT
-              TO_VARCHAR(s."id") AS paper_id,
-              s."arxiv_id",
-              s."title",
-              s."abstract"
-            FROM SILVER_PAPERS s
-            LEFT JOIN PAPER_EMBEDDINGS_CA ca
-              ON ca.paper_id = TO_VARCHAR(s."id")
-            WHERE ca.paper_id IS NULL
-              AND s."abstract" IS NOT NULL
-              AND s."arxiv_id" IS NOT NULL
-            LIMIT {int(limit)}
-            """
+                f"""
+                SELECT
+                    TO_VARCHAR(s."id") AS "paper_id",
+                    s."arxiv_id",
+                    s."title",
+                    s."abstract"
+                FROM SILVER_PAPERS s
+                LEFT JOIN PAPER_EMBEDDINGS_CA ca
+                    ON ca."paper_id" = TO_VARCHAR(s."id")
+                WHERE ca."paper_id" IS NULL
+                    AND s."abstract" IS NOT NULL
+                    AND s."arxiv_id" IS NOT NULL
+                LIMIT {int(limit)}
+                """
         )
         rows = cur.fetchall()
 

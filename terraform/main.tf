@@ -178,6 +178,106 @@ resource "snowflake_table_constraint" "fk_target_paper" {
   }
 }
 
+  # SILVER_PAPER_SECTIONS table
+  resource "snowflake_table" "silver_paper_sections" {
+    database = snowflake_database.mindmap.name
+    schema   = snowflake_schema.silver.name
+    name     = "SILVER_PAPER_SECTIONS"
+
+    column {
+      name = "section_id"
+      type = "NUMBER"
+      identity {
+        start_num = 1
+        step_num  = 1
+      }
+    }
+
+    column {
+      name = "paper_id"
+      type = "NUMBER"
+    }
+
+    column {
+      name = "section_name"
+      type = "VARCHAR"
+    }
+
+    column {
+      name = "section_order"
+      type = "NUMBER"
+    }
+
+    column {
+      name = "content"
+      type = "VARCHAR"
+    }
+
+    column {
+      name = "token_estimate"
+      type = "NUMBER"
+    }
+
+    primary_key {
+      keys = ["section_id"]
+    }
+  }
+
+  # SILVER_PAPER_CHUNKS table
+  resource "snowflake_table" "silver_paper_chunks" {
+    database = snowflake_database.mindmap.name
+    schema   = snowflake_schema.silver.name
+    name     = "SILVER_PAPER_CHUNKS"
+
+    column {
+      name = "chunk_id"
+      type = "NUMBER"
+      identity {
+        start_num = 1
+        step_num  = 1
+      }
+    }
+
+    column {
+      name = "paper_id"
+      type = "NUMBER"
+    }
+
+    column {
+      name = "section_id"
+      type = "NUMBER"
+    }
+
+    column {
+      name = "chunk_index"
+      type = "NUMBER"
+    }
+
+    column {
+      name = "chunk_text"
+      type = "VARCHAR"
+    }
+
+    column {
+      name = "token_estimate"
+      type = "NUMBER"
+    }
+
+    column {
+      name = "chunk_type"
+      type = "VARCHAR"
+    }
+
+    column {
+      name = "embedding"
+      type = "VECTOR(FLOAT, 384)"
+    }
+
+    primary_key {
+      keys = ["chunk_id"]
+    }
+  }
+
 # Compute Warehouse
 resource "snowflake_warehouse" "mindmap_wh" {
   name               = "MINDMAP_${upper(local.env)}_WH"  

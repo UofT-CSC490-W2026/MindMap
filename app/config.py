@@ -1,14 +1,37 @@
 import modal
 from pathlib import Path
+import os
 
 app = modal.App("mindmap-pipeline")
 APP_DIR = Path(__file__).resolve().parent
-DATABASE = "MINDMAP_DB"
-SCHEMA = "PUBLIC"
+DATABASE = f"MINDMAP_{os.getenv('MINDMAP_ENV', 'DEV').upper()}" # e.g. MINDMAP_DEV, MINDMAP_PROD
+WAREHOUSE = f"MINDMAP_{os.getenv('MINDMAP_ENV', 'DEV').upper()}_WH" # e.g. MINDMAP_DEV_WH, MINDMAP_PROD_WH
 
-
-def qualify_table(table_name: str, database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return f'"{database}"."{schema}"."{table_name}"'
+def resolve_schema_for_table(table_name: str) -> str:
+    """
+    Returns the schema name based on table naming convention.
+    E.g. BRONZE_PAPERS -> BRONZE, SILVER_PAPERS -> SILVER, GOLD_CONNECTIONS -> GOLD
+    Defaults to BRONZE if prefix not found.
+    """
+    upper_name = table_name.upper()
+    if upper_name.startswith("BRONZE_"):
+        return "BRONZE"
+    elif upper_name.startswith("SILVER_"):
+        return "SILVER"
+    elif upper_name.startswith("GOLD_"):
+        return "GOLD"
+    else:
+        return "BRONZE"  # Default fallback
+    
+def qualify_table(table_name: str, database: str = DATABASE) -> str:
+    """
+    Returns the fully qualified table name, automatically resolving schema if not provided.
+    Example usage:
+        bronze_table = qualify_table("BRONZE_PAPERS")
+        silver_table = qualify_table("SILVER_PAPERS")
+    """
+    schema = resolve_schema_for_table(table_name)
+    return f'{database}.{schema}.{table_name}'
 
 # Base image with common dependencies
 base_image = (

@@ -3,7 +3,7 @@ import json
 import re
 import threading
 import time
-from config import app, image, snowflake_secret, semantic_scholar_secret, DATABASE, SCHEMA, qualify_table
+from config import app, image, snowflake_secret, semantic_scholar_secret, DATABASE, qualify_table
 from utils import connect_to_snowflake
 import os
 
@@ -13,8 +13,8 @@ _ss_lock = threading.Lock()
 _ss_last_request_ts = 0.0
 
 
-def _bronze_papers_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("BRONZE_PAPERS", database=database, schema=schema)
+def _bronze_papers_table(database: str = DATABASE) -> str:
+    return qualify_table("BRONZE_PAPERS", database=database)
 
 
 def _extract_arxiv_id(external_ids: dict) -> str | None:
@@ -73,7 +73,7 @@ def _ss_get_json(url: str, params: dict, timeout: float = 30.0) -> dict:
 
 # Credentials should be stored in a Modal Secret
 @app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret])
-def ingest_from_arxiv(query: str, max_results: int = 5, database: str = DATABASE, schema: str = SCHEMA):
+def ingest_from_arxiv(query: str, max_results: int = 5, database: str = DATABASE):
     """
     Step 1: Ingestion to Bronze Layer (Idempotent)
     Fulfills Use Case 2: User types a general topic.
@@ -81,17 +81,18 @@ def ingest_from_arxiv(query: str, max_results: int = 5, database: str = DATABASE
     """
     search = arxiv.Search(query=query, max_results=max_results)
     
-    conn = connect_to_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="BRONZE")
     cur = conn.cursor()
     
-    bronze_table = _bronze_papers_table(database=database, schema=schema)
+    bronze_table = _bronze_papers_table(database=database)
+
     ingested_count = 0
     skipped_count = 0
 
     for result in search.results():
         # 1. Check if this paper already exists (idempotency)
         cur.execute(
-            f'SELECT 1 FROM {bronze_table} WHERE raw_payload:entry_id::STRING = %s LIMIT 1',
+            f'SELECT 1 FROM {bronze_table} WHERE "raw_payload":entry_id::STRING = %s LIMIT 1',
             (result.entry_id,)
         )
         if cur.fetchone():
@@ -120,7 +121,7 @@ def ingest_from_arxiv(query: str, max_results: int = 5, database: str = DATABASE
         
         # 4. Insert into the Bronze Table
         cur.execute(
-            f'INSERT INTO {bronze_table} (raw_payload) SELECT PARSE_JSON(%s)',
+            f'INSERT INTO {bronze_table} ("raw_payload") SELECT PARSE_JSON(%s)',
             (json_payload,)
         )
         ingested_count += 1
@@ -137,7 +138,6 @@ def ingest_from_semantic_scholar(
     query: str,
     max_results: int = 25,
     database: str = DATABASE,
-    schema: str = SCHEMA,
 ):
     """
     Step 1: Ingestion to Bronze Layer using Semantic Scholar search.
@@ -148,7 +148,8 @@ def ingest_from_semantic_scholar(
     - We only ingest rows that have an ArXiv id, because downstream transformation
       expects arXiv ids for PDF/conclusion extraction.
     """
-    bronze_table = _bronze_papers_table(database=database, schema=schema)
+    bronze_table = _bronze_papers_table(database=database)
+    print("Using bronze_table:", bronze_table)
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
     params = {
         "query": query,
@@ -159,7 +160,7 @@ def ingest_from_semantic_scholar(
         ),
     }
 
-    conn = connect_to_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="BRONZE")
     cur = conn.cursor()
 
     inserted = 0
@@ -183,8 +184,8 @@ def ingest_from_semantic_scholar(
                 f"""
                 SELECT 1
                 FROM {bronze_table}
-                WHERE raw_payload:entry_id::STRING = %s
-                   OR raw_payload:ss_paper_id::STRING = %s
+                WHERE "raw_payload":entry_id::STRING = %s
+                   OR "raw_payload":ss_paper_id::STRING = %s
                 LIMIT 1
                 """,
                 (entry_id, str(ss_paper_id) if ss_paper_id else None),
@@ -216,7 +217,7 @@ def ingest_from_semantic_scholar(
             }
 
             cur.execute(
-                f"INSERT INTO {bronze_table} (raw_payload) SELECT PARSE_JSON(%s)",
+                f"INSERT INTO {bronze_table} (\"raw_payload\") SELECT PARSE_JSON(%s)",
                 (json.dumps(raw_data),),
             )
             inserted += 1
@@ -232,19 +233,19 @@ def ingest_from_semantic_scholar(
 
 # testing function to see content of ingested bronze papers
 @app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret])
-def peek_bronze(limit: int = 3, database: str = DATABASE, schema: str = SCHEMA):
+def peek_bronze(limit: int = 3, database: str = DATABASE):
     """
     Inspects the raw JSON in Bronze, specifically focusing on the Abstract (summary).
     """
     import json
     import textwrap
 
-    conn = connect_to_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="BRONZE")
     cur = conn.cursor()
 
     try:
         # Pull the raw_payload from Snowflake
-        cur.execute(f'SELECT raw_payload FROM {_bronze_papers_table(database=database, schema=schema)} LIMIT %s', (limit,))
+        cur.execute(f'SELECT "raw_payload" FROM {_bronze_papers_table(database=database)} LIMIT %s', (limit,))
         rows = cur.fetchall()
 
         print(f"\n--- BRONZE LAYER PEEK: {len(rows)} PAPERS ---\n")

@@ -4,31 +4,30 @@ Build Gold layer relationships (citations + similarity) from Silver layer.
 import json
 from typing import Iterable, List, Optional, Tuple
 
-from config import app, image, snowflake_secret, DATABASE, SCHEMA, qualify_table
+from config import app, image, snowflake_secret, DATABASE, qualify_table
 from utils import connect_to_snowflake
 
 
-def _silver_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("SILVER_PAPERS", database=database, schema=schema)
+def _silver_table(database: str = DATABASE) -> str:
+    return qualify_table("SILVER_PAPERS", database=database)
 
 
-def _gold_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("GOLD_PAPER_RELATIONSHIPS", database=database, schema=schema)
+def _gold_table(database: str = DATABASE) -> str:
+    return qualify_table("GOLD_PAPER_RELATIONSHIPS", database=database)
 
 
-def _fetch_papers(cur, paper_id: Optional[int], database: str = DATABASE, schema: str = SCHEMA) -> List[Tuple[int, object, object]]:
-    silver = _silver_table(database=database, schema=schema)
+    silver = _silver_table(database=database)
     if paper_id is not None:
         cur.execute(
-            f'SELECT id, citation_list, similar_embeddings_ids FROM {silver} WHERE id = %s',
+            f'SELECT "id", "citation_list", "similar_embeddings_ids" FROM {silver} WHERE "id" = %s',
             (int(paper_id),),
         )
     else:
         cur.execute(
             f"""
-            SELECT id, citation_list, similar_embeddings_ids
+            SELECT "id", "citation_list", "similar_embeddings_ids"
             FROM {silver}
-            WHERE citation_list IS NOT NULL OR similar_embeddings_ids IS NOT NULL
+            WHERE "citation_list" IS NOT NULL OR "similar_embeddings_ids" IS NOT NULL
             """
         )
     return cur.fetchall()
@@ -55,7 +54,7 @@ def _normalize_ids(value) -> List[int]:
     return ids
 
 
-def _citation_targets(cur, citations: Iterable[dict], database: str = DATABASE, schema: str = SCHEMA) -> List[int]:
+def _citation_targets(cur, citations: Iterable[dict], database: str = DATABASE) -> List[int]:
     ss_ids = []
     for citation in citations:
         if not isinstance(citation, dict):
@@ -70,11 +69,11 @@ def _citation_targets(cur, citations: Iterable[dict], database: str = DATABASE, 
     values_sql = ", ".join(["(%s)"] * len(ss_ids))
     cur.execute(
         f"""
-        WITH source_ss_ids(ss_id) AS (SELECT column1 FROM VALUES {values_sql})
-                SELECT DISTINCT sp.id
+        WITH source_ss_ids("ss_id") AS (SELECT column1 FROM VALUES {values_sql})
+        SELECT DISTINCT sp."id"
         FROM source_ss_ids src
-        JOIN {_silver_table(database=database, schema=schema)} sp
-                    ON sp.ss_id = src.ss_id
+        JOIN {_silver_table(database=database)} sp
+            ON sp."ss_id" = src."ss_id"
         """,
         ss_ids,
     )
@@ -91,7 +90,6 @@ def _dedupe_edges(edges: Iterable[Tuple[int, int, str, float]]) -> List[Tuple[in
     return [(sid, tid, rel, strength) for (sid, tid, rel), strength in seen.items()]
 
 
-def _bulk_merge_edges(cur, edges: List[Tuple[int, int, str, float]], database: str = DATABASE, schema: str = SCHEMA) -> int:
     if not edges:
         return 0
 
@@ -99,23 +97,23 @@ def _bulk_merge_edges(cur, edges: List[Tuple[int, int, str, float]], database: s
     params = [value for edge in edges for value in edge]
     cur.execute(
         f"""
-        MERGE INTO {_gold_table(database=database, schema=schema)} AS target
+        MERGE INTO {_gold_table(database=database)} AS target
         USING (
             SELECT
-                column1 AS source_paper_id,
-                column2 AS target_paper_id,
-                column3 AS relationship_type,
-                column4 AS strength
+                column1 AS "source_paper_id",
+                column2 AS "target_paper_id",
+                column3 AS "relationship_type",
+                column4 AS "strength"
             FROM VALUES {values_sql}
         ) AS source
-        ON target.source_paper_id = source.source_paper_id
-           AND target.target_paper_id = source.target_paper_id
-           AND target.relationship_type = source.relationship_type
+        ON target."source_paper_id" = source."source_paper_id"
+           AND target."target_paper_id" = source."target_paper_id"
+           AND target."relationship_type" = source."relationship_type"
         WHEN MATCHED THEN
-            UPDATE SET target.strength = source.strength
+            UPDATE SET target."strength" = source."strength"
         WHEN NOT MATCHED THEN
-            INSERT (source_paper_id, target_paper_id, relationship_type, strength)
-            VALUES (source.source_paper_id, source.target_paper_id, source.relationship_type, source.strength)
+            INSERT ("source_paper_id", "target_paper_id", "relationship_type", "strength")
+            VALUES (source."source_paper_id", source."target_paper_id", source."relationship_type", source."strength")
         """,
         params,
     )
@@ -123,26 +121,26 @@ def _bulk_merge_edges(cur, edges: List[Tuple[int, int, str, float]], database: s
 
 
 @app.function(image=image, secrets=[snowflake_secret])
-def build_knowledge_graph(paper_id: int = None, database: str = DATABASE, schema: str = SCHEMA):
+def build_knowledge_graph(paper_id: int = None, database: str = DATABASE):
     """
     Populate Gold layer with citation and semantic similarity relationships.
     If paper_id is None, process all papers with cached relationships.
     """
-    conn = connect_to_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="GOLD")
     cur = conn.cursor()
     try:
-        papers = _fetch_papers(cur, paper_id, database=database, schema=schema)
+        papers = _fetch_papers(cur, paper_id, database=database)
         edges: List[Tuple[int, int, str, float]] = []
 
         for pid, citations, similar_ids in papers:
-            for target_id in _citation_targets(cur, _normalize_json_list(citations), database=database, schema=schema):
+            for target_id in _citation_targets(cur, _normalize_json_list(citations), database=database):
                 edges.append((int(pid), target_id, "CITES", 1.0))
 
             for idx, sim_id in enumerate(_normalize_ids(similar_ids)):
                 strength = max(0.0, 1.0 - (idx * 0.1))
                 edges.append((int(pid), sim_id, "SIMILAR", strength))
 
-        merged_count = _bulk_merge_edges(cur, _dedupe_edges(edges), database=database, schema=schema)
+        merged_count = _bulk_merge_edges(cur, _dedupe_edges(edges), database=database)
         conn.commit()
         return {"papers_processed": len(papers), "edges_merged": merged_count}
     finally:

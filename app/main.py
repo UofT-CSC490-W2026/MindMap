@@ -23,7 +23,7 @@ Parameters:
 All functions execute remotely in Modal containers.
 """
 
-from config import app, DATABASE, SCHEMA
+from config import app, DATABASE
 from workers.ingestion import ingest_from_arxiv, ingest_from_semantic_scholar
 from workers.transformation import main as transform_main, backfill_missing_ss_ids
 from workers.embedding_worker import run_embedding_batch, backfill_similar_ids, run_chunk_embedding_batch
@@ -39,7 +39,6 @@ def pipeline(
     k: int = 10,
     ss_backfill_limit: int = 1000,
     database: str = DATABASE,
-    schema: str = SCHEMA,
     skip_ingestion: bool = False,
     skip_transformation: bool = False,
     skip_ss_id_backfill: bool = False,
@@ -66,23 +65,22 @@ def pipeline(
                 query=query,
                 max_results=max_results,
                 database=database,
-                schema=schema,
             )
         else:
             print("Step 1: Ingesting papers from arXiv...")
-            ingest_from_arxiv.remote(query=query, max_results=max_results, database=database, schema=schema)
+            ingest_from_arxiv.remote(query=query, max_results=max_results, database=database)
     else:
         print("Step 1: Skipped (ingestion already complete)")
     
     if not skip_transformation:
         print("Step 2: Transforming Bronze -> Silver...")
-        transform_main.remote(database=database, schema=schema)
+        transform_main.remote(database=database)
     else:
         print("Step 2: Skipped (transformation already complete)")
 
     if not skip_ss_id_backfill:
         print("Step 2b: Backfilling missing ss_id values...")
-        backfill_missing_ss_ids.remote(limit=ss_backfill_limit, database=database, schema=schema)
+        backfill_missing_ss_ids.remote(limit=ss_backfill_limit, database=database)
     else:
         print("Step 2b: Skipped (ss_id backfill already complete)")
     
@@ -94,32 +92,31 @@ def pipeline(
             min_corpus_size_for_neighbors=threshold,
             k=k,
             database=database,
-            schema=schema,
         )
     else:
         print("Step 3: Skipped (paper embeddings already complete)")
     
     if not skip_chunking:
         print("Step 4: Chunking papers into RAG sections...")
-        chunk_papers.remote(limit=max_results, database=database, schema=schema)
+        chunk_papers.remote(limit=max_results, database=database)
     else:
         print("Step 4: Skipped (chunking already complete)")
     
     if not skip_chunk_embedding:
         print("Step 5: Embedding chunks for dense retrieval...")
-        run_chunk_embedding_batch.remote(limit=max_results * 10, database=database, schema=schema)
+        run_chunk_embedding_batch.remote(limit=max_results * 10, database=database)
     else:
         print("Step 5: Skipped (chunk embeddings already complete)")
     
     if not skip_backfill:
         print("Step 6: Backfill older papers' similar ids...")
-        backfill_similar_ids.remote(limit=max_results, k=k, database=database, schema=schema)
+        backfill_similar_ids.remote(limit=max_results, k=k, database=database)
     else:
         print("Step 6: Skipped (backfill already complete)")
     
     if not skip_graph:
         print("Step 7: Building knowledge graph...")
-        build_knowledge_graph.remote(database=database, schema=schema)
+        build_knowledge_graph.remote(database=database)
     else:
         print("Step 7: Skipped (knowledge graph already complete)")
     

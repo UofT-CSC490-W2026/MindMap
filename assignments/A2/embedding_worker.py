@@ -7,19 +7,6 @@ from utils import connect_to_snowflake
 from config import app, ml_image, snowflake_secret
 
 
-import snowflake.connector
-
-def connect_to_snowflake():
-    env = "DEV"
-
-    return snowflake.connector.connect(
-        account=os.environ["SNOWFLAKE_ACCOUNT"],
-        user=os.environ["SNOWFLAKE_USER"],
-        password=os.environ["SNOWFLAKE_PASSWORD"],
-        database=f"MINDMAP_{env}",
-        warehouse=f"MINDMAP_{env}_WH",
-        schema="SILVER"
-    )
 
 
 def _fetch_unembedded_from_silver(cur, limit: int = 200) -> List[Dict[str, Any]]:
@@ -116,7 +103,7 @@ def run_embedding_batch(
     """
     from sentence_transformers import SentenceTransformer
 
-    conn = connect_to_snowflake()
+    conn = connect_to_snowflake(database="MINDMAP_DEV", schema="SILVER")
     cur = conn.cursor()
     try:
         to_embed = _fetch_unembedded_from_silver(cur, limit=limit)
@@ -184,7 +171,7 @@ def backfill_similar_ids(limit: int = 200, k: int = 10) -> Dict[str, Any]:
     Fill similar_embeddings_ids for older papers that already have embeddings
     but do not have cached neighbors yet.
     """
-    conn = connect_to_snowflake()
+    conn = connect_to_snowflake(database="MINDMAP_DEV", schema="SILVER")
     cur = conn.cursor()
     try:
         cur.execute(

@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional
 import logging
 
 from utils import connect_to_snowflake
-from config import app, image, snowflake_secret, DATABASE, SCHEMA, qualify_table
+from config import app, image, snowflake_secret, DATABASE, qualify_table
 
 WORDS_PER_CHUNK = 500
 WORDS_PER_CHUNK_MAX = 800
@@ -17,16 +17,16 @@ STATEMENT_TIMEOUT_SECONDS = 120
 logger = logging.getLogger(__name__)
 
 
-def _silver_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("SILVER_PAPERS", database=database, schema=schema)
+def _silver_table(database: str = DATABASE) -> str:
+    return qualify_table("SILVER_PAPERS", database=database)
 
 
-def _sections_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("SILVER_PAPER_SECTIONS", database=database, schema=schema)
+def _sections_table(database: str = DATABASE) -> str:
+    return qualify_table("SILVER_PAPER_SECTIONS", database=database)
 
 
-def _chunks_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("SILVER_PAPER_CHUNKS", database=database, schema=schema)
+def _chunks_table(database: str = DATABASE) -> str:
+    return qualify_table("SILVER_PAPER_CHUNKS", database=database)
 
 
 def _estimate_word_count(text: Optional[str]) -> int:
@@ -78,25 +78,25 @@ def _split_into_chunks(
     return chunks
 
 
-def _fetch_unchunked_papers(cur, database: str = DATABASE, schema: str = SCHEMA, limit: int = 100) -> List[Dict[str, Any]]:
+def _fetch_unchunked_papers(cur, database: str = DATABASE, limit: int = 100) -> List[Dict[str, Any]]:
     """
     Fetch papers that do not yet have sections/chunks.
     """
-    silver = _silver_table(database=database, schema=schema)
-    sections = _sections_table(database=database, schema=schema)
+    silver = _silver_table(database=database)
+    sections = _sections_table(database=database)
 
     cur.execute(
         f"""
         SELECT
-                    sp.id,
-                    sp.arxiv_id,
-                    sp.title,
-                    sp.abstract,
-                    sp.conclusion
+            sp."id",
+            sp."arxiv_id",
+            sp."title",
+            sp."abstract",
+            sp."conclusion"
         FROM {silver} sp
         LEFT JOIN {sections} sec
-                    ON sec.paper_id = sp.id
-                WHERE sec.section_id IS NULL
+            ON sec."paper_id" = sp."id"
+        WHERE sec."section_id" IS NULL
                     AND (sp.abstract IS NOT NULL OR sp.conclusion IS NOT NULL)
         LIMIT {int(limit)}
         """
@@ -109,7 +109,6 @@ def _fetch_unchunked_papers(cur, database: str = DATABASE, schema: str = SCHEMA,
 def _insert_section_and_chunks(
     cur,
     database: str,
-    schema: str,
     paper_id: int,
     section_name: str,
     section_index: int,
@@ -119,8 +118,8 @@ def _insert_section_and_chunks(
     Insert a single section and its chunks into the database.
     Returns (section_id, chunks_inserted).
     """
-    sections = _sections_table(database=database, schema=schema)
-    chunks = _chunks_table(database=database, schema=schema)
+    sections = _sections_table(database=database)
+    chunks = _chunks_table(database=database)
 
     word_count = _estimate_word_count(content)
 
@@ -134,10 +133,10 @@ def _insert_section_and_chunks(
     )
     cur.execute(
         f"""
-        SELECT section_id
+        SELECT "section_id"
         FROM {sections}
-        WHERE paper_id = %s AND section_name = %s
-        ORDER BY section_id DESC
+        WHERE "paper_id" = %s AND "section_name" = %s
+        ORDER BY "section_id" DESC
         LIMIT 1
         """,
         (int(paper_id), section_name),
@@ -190,7 +189,7 @@ def _insert_section_and_chunks(
 
 
 @app.function(image=image, secrets=[snowflake_secret], timeout=60 * 45)
-def chunk_papers(limit: int = 100, database: str = DATABASE, schema: str = SCHEMA) -> Dict[str, Any]:
+def chunk_papers(limit: int = 100, database: str = DATABASE) -> Dict[str, Any]:
     """
     Split papers into sections and chunks for RAG retrieval.
 
@@ -200,14 +199,14 @@ def chunk_papers(limit: int = 100, database: str = DATABASE, schema: str = SCHEM
     - Writes to SILVER_PAPER_SECTIONS and SILVER_PAPER_CHUNKS tables
     - Idempotent: reruns only process new papers
     """
-    conn = connect_to_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
 
     try:
         # Prevent a single pathological query from hanging the entire run.
         cur.execute(f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {int(STATEMENT_TIMEOUT_SECONDS)}")
 
-        papers_to_chunk = _fetch_unchunked_papers(cur, database=database, schema=schema, limit=limit)
+        papers_to_chunk = _fetch_unchunked_papers(cur, database=database, limit=limit)
         if not papers_to_chunk:
             return {"status": "ok", "papers_chunked": 0, "note": "No new papers to chunk."}
 
@@ -235,7 +234,6 @@ def chunk_papers(limit: int = 100, database: str = DATABASE, schema: str = SCHEM
                         _, added_chunks = _insert_section_and_chunks(
                             cur,
                             database=database,
-                            schema=schema,
                             paper_id=paper_id,
                             section_name="abstract",
                             section_index=section_idx,
@@ -255,7 +253,6 @@ def chunk_papers(limit: int = 100, database: str = DATABASE, schema: str = SCHEM
                         _, added_chunks = _insert_section_and_chunks(
                             cur,
                             database=database,
-                            schema=schema,
                             paper_id=paper_id,
                             section_name="conclusion",
                             section_index=section_idx,
@@ -282,7 +279,6 @@ def chunk_papers(limit: int = 100, database: str = DATABASE, schema: str = SCHEM
             "sections_skipped": skipped_sections,
             "chunks_created": total_chunks,
             "database": database,
-            "schema": schema,
         }
 
     except Exception as e:

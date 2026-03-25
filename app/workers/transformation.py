@@ -3,7 +3,7 @@ import threading
 import time
 import os
 from typing import Any, Dict, List, Optional
-from config import app, image, snowflake_secret, semantic_scholar_secret, DATABASE, SCHEMA, qualify_table
+from config import app, image, snowflake_secret, semantic_scholar_secret, DATABASE, qualify_table
 from utils import connect_to_snowflake
 
 
@@ -210,12 +210,12 @@ def _fetch_ss_batch_tldr(arxiv_ids: List[str], batch_size: int = 100) -> Dict[st
     return output
 
 
-def _bronze_papers_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("BRONZE_PAPERS", database=database, schema=schema)
+def _bronze_papers_table(database: str = DATABASE) -> str:
+    return qualify_table("BRONZE_PAPERS", database=database)
 
 
-def _silver_papers_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("SILVER_PAPERS", database=database, schema=schema)
+def _silver_papers_table(database: str = DATABASE) -> str:
+    return qualify_table("SILVER_PAPERS", database=database)
 
 
 
@@ -431,7 +431,6 @@ def transform_to_silver(
     arxiv_id: str,
     ss_prefetched: Optional[Dict[str, Any]] = None,
     database: str = DATABASE,
-    schema: str = SCHEMA,
 ):
     import json
     
@@ -470,7 +469,7 @@ def transform_to_silver(
             except Exception:
                 pass
 
-        conn = connect_to_snowflake(database=database, schema=schema)
+        conn = connect_to_snowflake(database=database, schema="SILVER")
         cur = conn.cursor()
 
         try:
@@ -480,31 +479,31 @@ def transform_to_silver(
                 MERGE INTO {silver_papers} target
                 USING (
                     SELECT 
-                        %s as arxiv_id,
-                        %s as ss_id,
-                        raw_payload:title::STRING as title,
-                        raw_payload:summary::STRING as abstract,
-                        %s as conclusion,
-                        PARSE_JSON(%s) as reference_list,
-                        PARSE_JSON(%s) as citation_list
+                        %s as "arxiv_id",
+                        %s as "ss_id",
+                        "raw_payload":title::STRING as "title",
+                        "raw_payload":summary::STRING as "abstract",
+                        %s as "conclusion",
+                        PARSE_JSON(%s) as "reference_list",
+                        PARSE_JSON(%s) as "citation_list"
                     FROM {bronze_papers}
-                    WHERE raw_payload:entry_id::STRING LIKE %s
+                    WHERE "raw_payload":entry_id::STRING LIKE %s
                     LIMIT 1
                 ) source
-                ON target.arxiv_id = source.arxiv_id OR (target.ss_id = source.ss_id AND source.ss_id IS NOT NULL)
+                ON target."arxiv_id" = source."arxiv_id" OR (target."ss_id" = source."ss_id" AND source."ss_id" IS NOT NULL)
                 WHEN MATCHED THEN
                     UPDATE SET 
-                        target.arxiv_id = COALESCE(target.arxiv_id, source.arxiv_id),
-                        target.ss_id = COALESCE(target.ss_id, source.ss_id),
-                        target.conclusion = source.conclusion,
-                        target.reference_list = source.reference_list,
-                        target.citation_list = source.citation_list
+                        target."arxiv_id" = COALESCE(target."arxiv_id", source."arxiv_id"),
+                        target."ss_id" = COALESCE(target."ss_id", source."ss_id"),
+                        target."conclusion" = source."conclusion",
+                        target."reference_list" = source."reference_list",
+                        target."citation_list" = source."citation_list"
                 WHEN NOT MATCHED THEN
-                    INSERT (arxiv_id, ss_id, title, abstract, conclusion, reference_list, citation_list)
-                    VALUES (source.arxiv_id, source.ss_id, source.title, source.abstract, source.conclusion, source.reference_list, source.citation_list);
+                    INSERT ("arxiv_id", "ss_id", "title", "abstract", "conclusion", "reference_list", "citation_list")
+                    VALUES (source."arxiv_id", source."ss_id", source."title", source."abstract", source."conclusion", source."reference_list", source."citation_list");
             """.format(
-                silver_papers=_silver_papers_table(database=database, schema=schema),
-                bronze_papers=_bronze_papers_table(database=database, schema=schema),
+                silver_papers=_silver_papers_table(database=database),
+                bronze_papers=_bronze_papers_table(database=database),
             ), (
                 arxiv_id,
                 ss_id, 
@@ -530,16 +529,16 @@ def transform_to_silver(
 
 # Provides a list of arxiv_ids in the bronze layer to be processed into silver
 @app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret], max_containers=5)
-def get_bronze_worklist(database: str = DATABASE, schema: str = SCHEMA):
-    conn = connect_to_snowflake(database=database, schema=schema)
+def get_bronze_worklist(database: str = DATABASE):
+    conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
     
     # Get all IDs in Bronze
-    cur.execute(f'SELECT raw_payload:entry_id::STRING FROM {_bronze_papers_table(database=database, schema=schema)}')
+    cur.execute(f'SELECT "raw_payload":entry_id::STRING FROM {_bronze_papers_table(database=database)}')
     rows = cur.fetchall()
     
     # Optional: Filter out papers already in Silver to avoid redundant work
-    cur.execute(f'SELECT arxiv_id FROM {_silver_papers_table(database=database, schema=schema)}')
+    cur.execute(f'SELECT "arxiv_id" FROM {_silver_papers_table(database=database)}')
     existing_ids = {row[0] for row in cur.fetchall()}
     cur.close()
     conn.close()
@@ -554,8 +553,8 @@ def get_bronze_worklist(database: str = DATABASE, schema: str = SCHEMA):
     return arxiv_ids
 
 @app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret], max_containers=1, timeout=60*30)
-def main(parallel=1, database: str = DATABASE, schema: str = SCHEMA):
-    ids_to_process = get_bronze_worklist.remote(database=database, schema=schema)
+def main(parallel=1, database: str = DATABASE):
+    ids_to_process = get_bronze_worklist.remote(database=database)
     print(f"DEBUG: Found {len(ids_to_process)} papers to process.")
 
     if not ids_to_process:
@@ -573,7 +572,6 @@ def main(parallel=1, database: str = DATABASE, schema: str = SCHEMA):
                 entry,
                 ss_prefetched=ss_prefetch.get(entry),
                 database=database,
-                schema=schema,
             )
         
         print("Done!")
@@ -586,7 +584,6 @@ def main(parallel=1, database: str = DATABASE, schema: str = SCHEMA):
                     entry,
                     ss_prefetched=ss_prefetch.get(entry),
                     database=database,
-                    schema=schema,
                 )
                 
             except Exception as e:
@@ -600,25 +597,24 @@ def backfill_missing_ss_ids(
     limit: int = 1000,
     batch_size: int = 100,
     database: str = DATABASE,
-    schema: str = SCHEMA,
 ):
     """
     Backfill missing ss_id values in SILVER_PAPERS using Semantic Scholar batch endpoint.
 
     This is idempotent and only updates rows where ss_id IS NULL and arxiv_id IS NOT NULL.
     """
-    silver = _silver_papers_table(database=database, schema=schema)
+    silver = _silver_papers_table(database=database)
 
-    conn = connect_to_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
     try:
         cur.execute(
             f"""
-            SELECT id, arxiv_id
-            FROM {silver}
-            WHERE ss_id IS NULL
-              AND arxiv_id IS NOT NULL
-            LIMIT {int(limit)}
+                        SELECT "id", "arxiv_id"
+                        FROM {silver}
+                        WHERE "ss_id" IS NULL
+                            AND "arxiv_id" IS NOT NULL
+                        LIMIT {int(limit)}
             """
         )
         rows = [(int(r[0]), str(r[1])) for r in cur.fetchall() if r[1]]
@@ -674,7 +670,6 @@ def backfill_missing_ss_ids(
             "resolved": len(ss_map),
             "updated": len(updates),
             "database": database,
-            "schema": schema,
         }
     finally:
         cur.close()
@@ -687,7 +682,6 @@ def backfill_conclusions_from_tldr(
     batch_size: int = 100,
     overwrite_existing: bool = False,
     database: str = DATABASE,
-    schema: str = SCHEMA,
 ):
     """
     Fill SILVER_PAPERS.conclusion from Semantic Scholar TLDR.
@@ -695,27 +689,27 @@ def backfill_conclusions_from_tldr(
     Default behavior only fills missing/blank conclusions. If overwrite_existing=True,
     existing conclusions are replaced by TLDR when available.
     """
-    silver = _silver_papers_table(database=database, schema=schema)
+    silver = _silver_papers_table(database=database)
 
-    conn = connect_to_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
     try:
         if overwrite_existing:
             cur.execute(
                 f"""
-                SELECT id, arxiv_id
+                SELECT "id", "arxiv_id"
                 FROM {silver}
-                WHERE arxiv_id IS NOT NULL
+                WHERE "arxiv_id" IS NOT NULL
                 LIMIT {int(limit)}
                 """
             )
         else:
             cur.execute(
                 f"""
-                SELECT id, arxiv_id
+                SELECT "id", "arxiv_id"
                 FROM {silver}
-                WHERE arxiv_id IS NOT NULL
-                  AND (conclusion IS NULL OR LENGTH(TRIM(conclusion)) = 0)
+                WHERE "arxiv_id" IS NOT NULL
+                  AND ("conclusion" IS NULL OR LENGTH(TRIM("conclusion")) = 0)
                 LIMIT {int(limit)}
                 """
             )
@@ -783,7 +777,6 @@ def backfill_conclusions_from_tldr(
             "updated": len(updates),
             "ss_id_updated": len(ss_id_updates),
             "database": database,
-            "schema": schema,
         }
     finally:
         cur.close()

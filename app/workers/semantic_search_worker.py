@@ -6,15 +6,15 @@ import json
 import re
 
 from utils import connect_to_snowflake
-from config import app, image, ml_image, snowflake_secret, DATABASE, SCHEMA, qualify_table
+from config import app, image, ml_image, snowflake_secret, DATABASE, qualify_table
 
 
-def _silver_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("SILVER_PAPERS", database=database, schema=schema)
+def _silver_table(database: str = DATABASE) -> str:
+    return qualify_table("SILVER_PAPERS", database=database)
 
 
-def _chunks_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("SILVER_PAPER_CHUNKS", database=database, schema=schema)
+def _chunks_table(database: str = DATABASE) -> str:
+    return qualify_table("SILVER_PAPER_CHUNKS", database=database)
 
 
 def _parse_cached_ids(value: Any, k: int) -> List[int]:
@@ -56,24 +56,23 @@ def get_related_papers(
     score_threshold: float = 0.0,
     force_refresh: bool = False,
     database: str = DATABASE,
-    schema: str = SCHEMA,
 ) -> List[Dict[str, Any]]:
     """
     ONLINE endpoint:
     1) Try cached similar_embeddings_ids first
     2) If missing, fallback to vector similarity query
     """
-    silver = _silver_table(database=database, schema=schema)
+    silver = _silver_table(database=database)
 
-    conn = connect_to_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="GOLD")
     cur = conn.cursor()
     try:
         if not force_refresh:
             cur.execute(
                 f"""
-                SELECT similar_embeddings_ids
+                SELECT "similar_embeddings_ids"
                 FROM {silver}
-                WHERE id = %s
+                WHERE "id" = %s
                 """,
                 (int(paper_id),),
             )
@@ -83,8 +82,8 @@ def get_related_papers(
                 values_sql = ", ".join(["(%s)"] * len(cached_ids))
                 cur.execute(
                     f"""
-                    WITH ids(id) AS (SELECT column1 FROM VALUES {values_sql})
-                                        SELECT s.id, s.arxiv_id, s.title
+                    WITH ids("id") AS (SELECT column1 FROM VALUES {values_sql})
+                    SELECT s."id", s."arxiv_id", s."title"
                     FROM ids
                     JOIN {silver} s
                                             ON s.id = ids.id
@@ -106,7 +105,6 @@ def get_related_papers(
                                 "title": r[2],
                                 "source": "cache",
                                 "database": database,
-                                "schema": schema,
                             }
                         )
                 return ordered
@@ -114,7 +112,7 @@ def get_related_papers(
         cur.execute(
             f"""
             WITH q AS (
-                            SELECT embedding AS qvec
+                            SELECT "embedding" AS qvec
               FROM {silver}
                             WHERE id = %s
                                 AND embedding IS NOT NULL
@@ -175,7 +173,6 @@ def semantic_search(
     model_name: str = "sentence-transformers/all-MiniLM-L12-v2",
     score_threshold: float = 0.0,
     database: str = DATABASE,
-    schema: str = SCHEMA,
 ) -> List[Dict[str, Any]]:
     """
     Query-based semantic search across papers with a lightweight hybrid rerank.
@@ -188,12 +185,12 @@ def semantic_search(
     if not q:
         return []
 
-    silver = _silver_table(database=database, schema=schema)
+    silver = _silver_table(database=database)
 
     model = SentenceTransformer(model_name)
     qvec = model.encode([q], normalize_embeddings=True)[0].tolist()
 
-    conn = connect_to_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="GOLD")
     cur = conn.cursor()
     try:
         cur.execute(
@@ -226,7 +223,6 @@ def semantic_search(
                     "score": float(vec_score),
                     "hybrid_score": float(hybrid),
                     "database": database,
-                    "schema": schema,
                 }
             )
 
@@ -245,7 +241,6 @@ def retrieve_similar_chunks(
     score_threshold: float = 0.3,
     model_name: str = "sentence-transformers/all-MiniLM-L12-v2",
     database: str = DATABASE,
-    schema: str = SCHEMA,
 ) -> List[Dict[str, Any]]:
     """
     RAG retrieval: find most similar chunks to a query.
@@ -263,12 +258,12 @@ def retrieve_similar_chunks(
     if not q:
         return []
 
-    chunks = _chunks_table(database=database, schema=schema)
+    chunks = _chunks_table(database=database)
 
     model = SentenceTransformer(model_name)
     qvec = model.encode([q], normalize_embeddings=True)[0].tolist()
 
-    conn = connect_to_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="GOLD")
     cur = conn.cursor()
     try:
         paper_filter = ""
@@ -309,7 +304,6 @@ def retrieve_similar_chunks(
                 "section_name": r[4],
                 "score": float(r[5]),
                 "database": database,
-                "schema": schema,
             }
             for r in rows
         ]

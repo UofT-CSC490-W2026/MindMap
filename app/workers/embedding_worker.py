@@ -4,31 +4,31 @@ from typing import List, Dict, Any, Tuple, Optional
 import json
 
 from utils import connect_to_snowflake
-from config import app, ml_image, snowflake_secret, DATABASE, SCHEMA, qualify_table
+from config import app, ml_image, snowflake_secret, DATABASE, qualify_table
 
-def _silver_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("SILVER_PAPERS", database=database, schema=schema)
-
-
-def _chunks_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("SILVER_PAPER_CHUNKS", database=database, schema=schema)
+def _silver_table(database: str = DATABASE) -> str:
+    return qualify_table("SILVER_PAPERS", database=database)
 
 
-def _fetch_unembedded_from_silver(cur, database: str = DATABASE, schema: str = SCHEMA, limit: int = 200) -> List[Dict[str, Any]]:
+def _chunks_table(database: str = DATABASE) -> str:
+    return qualify_table("SILVER_PAPER_CHUNKS", database=database)
+
+
+def _fetch_unembedded_from_silver(cur, database: str = DATABASE, limit: int = 200) -> List[Dict[str, Any]]:
     """
     Fetch papers in SILVER_PAPERS that do not have embeddings yet.
     """
-    silver = _silver_table(database=database, schema=schema)
+    silver = _silver_table(database=database)
     cur.execute(
         f"""
         SELECT
-                    id,
-                    title,
-                    conclusion,
-                    abstract
+            "id",
+            "title",
+            "conclusion",
+            "abstract"
         FROM {silver}
-                WHERE embedding IS NULL
-                    AND (abstract IS NOT NULL OR conclusion IS NOT NULL)
+        WHERE "embedding" IS NULL
+            AND ("abstract" IS NOT NULL OR "conclusion" IS NOT NULL)
         LIMIT {int(limit)}
         """
     )
@@ -37,36 +37,36 @@ def _fetch_unembedded_from_silver(cur, database: str = DATABASE, schema: str = S
     return [dict(zip(cols, r)) for r in rows]
 
 
-def _update_embeddings(cur, database: str, schema: str, rows: List[Tuple[int, List[float]]], dim: int = 384):
+def _update_embeddings(cur, database: str, rows: List[Tuple[int, List[float]]], dim: int = 384):
     if not rows:
         return
 
-    silver = _silver_table(database=database, schema=schema)
+    silver = _silver_table(database=database)
     sql = f"""
     UPDATE {silver}
-    SET embedding = PARSE_JSON(%s)::VECTOR(FLOAT, {dim})
-    WHERE id = %s
+    SET "embedding" = PARSE_JSON(%s)::VECTOR(FLOAT, {dim})
+    WHERE "id" = %s
     """
 
     binds = [(json.dumps(emb), int(pid)) for pid, emb in rows]
     cur.executemany(sql, binds)
 
 
-def _compute_topk_in_snowflake(cur, database: str, schema: str, pid: int, k: int) -> List[int]:
-    silver = _silver_table(database=database, schema=schema)
+def _compute_topk_in_snowflake(cur, database: str, pid: int, k: int) -> List[int]:
+    silver = _silver_table(database=database)
     cur.execute(
         f"""
         WITH q AS (
-                    SELECT embedding AS qvec
-          FROM {silver}
-                    WHERE id = %s
-                        AND embedding IS NOT NULL
+            SELECT "embedding" AS qvec
+            FROM {silver}
+            WHERE "id" = %s
+                AND "embedding" IS NOT NULL
         )
-                SELECT e.id
+        SELECT e."id"
         FROM {silver} e, q
-                WHERE e.id <> %s
-                    AND e.embedding IS NOT NULL
-                ORDER BY VECTOR_COSINE_SIMILARITY(e.embedding, q.qvec) DESC
+        WHERE e."id" <> %s
+            AND e."embedding" IS NOT NULL
+        ORDER BY VECTOR_COSINE_SIMILARITY(e."embedding", q.qvec) DESC
         LIMIT %s
         """,
         (pid, pid, int(k)),
@@ -74,25 +74,25 @@ def _compute_topk_in_snowflake(cur, database: str, schema: str, pid: int, k: int
     return [int(r[0]) for r in cur.fetchall()]
 
 
-def _write_similar_ids(cur, database: str, schema: str, pid: int, sim_ids: List[int]):
-    silver = _silver_table(database=database, schema=schema)
+def _write_similar_ids(cur, database: str, pid: int, sim_ids: List[int]):
+    silver = _silver_table(database=database)
     cur.execute(
         f"""
         UPDATE {silver}
-        SET similar_embeddings_ids = PARSE_JSON(%s)
-        WHERE id = %s
+        SET "similar_embeddings_ids" = PARSE_JSON(%s)
+        WHERE "id" = %s
         """,
         (json.dumps(sim_ids), int(pid)),
     )
 
 
-def _count_embedded_papers(cur, database: str, schema: str) -> int:
-    silver = _silver_table(database=database, schema=schema)
+def _count_embedded_papers(cur, database: str) -> int:
+    silver = _silver_table(database=database)
     cur.execute(
         f"""
         SELECT COUNT(*)
         FROM {silver}
-        WHERE embedding IS NOT NULL
+        WHERE "embedding" IS NOT NULL
         """
     )
     return int(cur.fetchone()[0])
@@ -127,7 +127,6 @@ def run_embedding_batch(
     min_corpus_size_for_neighbors: Optional[int] = None,
     k: int = 10,
     database: str = DATABASE,
-    schema: str = SCHEMA,
 ) -> Dict[str, Any]:
     """
     Pull rows with NULL embedding from SILVER_PAPERS, generate embeddings,
@@ -137,10 +136,10 @@ def run_embedding_batch(
     sentence_transformers = importlib.import_module("sentence_transformers")
     SentenceTransformer = sentence_transformers.SentenceTransformer
 
-    conn = connect_to_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
     try:
-        to_embed = _fetch_unembedded_from_silver(cur, database=database, schema=schema, limit=limit)
+        to_embed = _fetch_unembedded_from_silver(cur, database=database, limit=limit)
         if not to_embed:
             return {"status": "ok", "embedded": 0, "note": "No new rows with NULL embedding."}
 
@@ -178,10 +177,10 @@ def run_embedding_batch(
         for pid, vec in zip(ids, vectors):
             payload.append((pid, vec.tolist()))
 
-        _update_embeddings(cur, database=database, schema=schema, rows=payload)
+        _update_embeddings(cur, database=database, rows=payload)
         conn.commit()
 
-        total = _count_embedded_papers(cur, database=database, schema=schema)
+        total = _count_embedded_papers(cur, database=database)
         should_populate_neighbors = (
             populate_similar
             and (min_corpus_size_for_neighbors is None or total >= int(min_corpus_size_for_neighbors))
@@ -189,8 +188,8 @@ def run_embedding_batch(
 
         if should_populate_neighbors:
             for pid in ids:
-                sim_ids = _compute_topk_in_snowflake(cur, database=database, schema=schema, pid=pid, k=k)
-                _write_similar_ids(cur, database=database, schema=schema, pid=pid, sim_ids=sim_ids)
+                sim_ids = _compute_topk_in_snowflake(cur, database=database, pid=pid, k=k)
+                _write_similar_ids(cur, database=database, pid=pid, sim_ids=sim_ids)
             conn.commit()
 
         return {
@@ -199,7 +198,6 @@ def run_embedding_batch(
             "model": model_name,
             "k": int(k),
             "database": database,
-            "schema": schema,
             "neighbors_populated": bool(should_populate_neighbors),
             "skipped_empty_text": skipped_empty_text,
         }
@@ -209,23 +207,23 @@ def run_embedding_batch(
 
 
 @app.function(image=ml_image, secrets=[snowflake_secret], timeout=60 * 20)
-def backfill_similar_ids(limit: int = 200, k: int = 10, database: str = DATABASE, schema: str = SCHEMA) -> Dict[str, Any]:
+def backfill_similar_ids(limit: int = 200, k: int = 10, database: str = DATABASE) -> Dict[str, Any]:
     """
     Fill similar_embeddings_ids for older papers that already have embeddings
     but do not yet have cached neighbors.
     """
-    silver = _silver_table(database=database, schema=schema)
+    silver = _silver_table(database=database)
 
-    conn = connect_to_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
     try:
         cur.execute(
             f"""
-                        SELECT id
-            FROM {silver}
-                        WHERE embedding IS NOT NULL
-                            AND similar_embeddings_ids IS NULL
-            LIMIT {int(limit)}
+                SELECT "id"
+                FROM {silver}
+                WHERE "embedding" IS NOT NULL
+                    AND "similar_embeddings_ids" IS NULL
+                LIMIT {int(limit)}
             """
         )
         ids = [int(r[0]) for r in cur.fetchall()]
@@ -233,38 +231,38 @@ def backfill_similar_ids(limit: int = 200, k: int = 10, database: str = DATABASE
             return {"status": "ok", "backfilled": 0, "note": "No rows missing cache."}
 
         for pid in ids:
-            sim_ids = _compute_topk_in_snowflake(cur, database=database, schema=schema, pid=pid, k=k)
+            sim_ids = _compute_topk_in_snowflake(cur, database=database, pid=pid, k=k)
             cur.execute(
                 f"""
                 UPDATE {silver}
-                SET similar_embeddings_ids = PARSE_JSON(%s)
-                WHERE id = %s
+                SET "similar_embeddings_ids" = PARSE_JSON(%s)
+                WHERE "id" = %s
                 """,
                 (json.dumps(sim_ids), int(pid)),
             )
 
         conn.commit()
-        return {"status": "ok", "backfilled": len(ids), "k": int(k), "database": database, "schema": schema}
+        return {"status": "ok", "backfilled": len(ids), "k": int(k), "database": database}
     finally:
         cur.close()
         conn.close()
 
 
-def _fetch_unembedded_chunks(cur, database: str = DATABASE, schema: str = SCHEMA, limit: int = 500) -> List[Dict[str, Any]]:
+def _fetch_unembedded_chunks(cur, database: str = DATABASE, limit: int = 500) -> List[Dict[str, Any]]:
     """
     Fetch chunks that do not have embeddings yet.
     """
-    chunks = _chunks_table(database=database, schema=schema)
+    chunks = _chunks_table(database=database)
     cur.execute(
         f"""
         SELECT
-                    chunk_id,
-                    paper_id,
-                    section_id,
-                    chunk_text
+            "chunk_id",
+            "paper_id",
+            "section_id",
+            "chunk_text"
         FROM {chunks}
-                WHERE embedding IS NULL
-                    AND chunk_text IS NOT NULL
+        WHERE "embedding" IS NULL
+            AND "chunk_text" IS NOT NULL
         LIMIT {int(limit)}
         """
     )
@@ -273,18 +271,18 @@ def _fetch_unembedded_chunks(cur, database: str = DATABASE, schema: str = SCHEMA
     return [dict(zip(cols, r)) for r in rows]
 
 
-def _update_chunk_embeddings(cur, database: str, schema: str, rows: List[Tuple[int, List[float]]], dim: int = 384):
+def _update_chunk_embeddings(cur, database: str, rows: List[Tuple[int, List[float]]], dim: int = 384):
     """
     Update embeddings for chunks.
     """
     if not rows:
         return
 
-    chunks = _chunks_table(database=database, schema=schema)
+    chunks = _chunks_table(database=database)
     sql = f"""
     UPDATE {chunks}
-    SET embedding = PARSE_JSON(%s)::VECTOR(FLOAT, {dim})
-    WHERE chunk_id = %s
+    SET "embedding" = PARSE_JSON(%s)::VECTOR(FLOAT, {dim})
+    WHERE "chunk_id" = %s
     """
 
     binds = [(json.dumps(emb), int(chunk_id)) for chunk_id, emb in rows]
@@ -296,7 +294,6 @@ def run_chunk_embedding_batch(
     limit: int = 500,
     model_name: str = "sentence-transformers/all-MiniLM-L12-v2",
     database: str = DATABASE,
-    schema: str = SCHEMA,
 ) -> Dict[str, Any]:
     """
     Embed chunks from SILVER_PAPER_CHUNKS.
@@ -310,10 +307,10 @@ def run_chunk_embedding_batch(
     sentence_transformers = importlib.import_module("sentence_transformers")
     SentenceTransformer = sentence_transformers.SentenceTransformer
 
-    conn = connect_to_snowflake(database=database, schema=schema)
+    conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
     try:
-        chunks_to_embed = _fetch_unembedded_chunks(cur, database=database, schema=schema, limit=limit)
+        chunks_to_embed = _fetch_unembedded_chunks(cur, database=database, limit=limit)
         if not chunks_to_embed:
             return {"status": "ok", "chunks_embedded": 0, "note": "No new chunks to embed."}
 
@@ -348,7 +345,7 @@ def run_chunk_embedding_batch(
         for chunk_id, vec in zip(chunk_ids, vectors):
             payload.append((chunk_id, vec.tolist()))
 
-        _update_chunk_embeddings(cur, database=database, schema=schema, rows=payload)
+        _update_chunk_embeddings(cur, database=database, rows=payload)
         conn.commit()
 
         return {
@@ -356,7 +353,6 @@ def run_chunk_embedding_batch(
             "chunks_embedded": len(payload),
             "model": model_name,
             "database": database,
-            "schema": schema,
         }
     finally:
         cur.close()

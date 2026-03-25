@@ -1,5 +1,6 @@
 
 -- Initial Setup
+DROP TABLE IF EXISTS MINDMAP_DB.PUBLIC.APP_QA_LOGS;
 DROP TABLE IF EXISTS MINDMAP_DB.PUBLIC.GOLD_SUMMARY_EVIDENCE;
 DROP TABLE IF EXISTS MINDMAP_DB.PUBLIC.GOLD_PAPER_SUMMARIES;
 DROP TABLE IF EXISTS MINDMAP_DB.PUBLIC.GOLD_PAPER_RELATIONSHIPS;
@@ -29,10 +30,14 @@ CREATE TABLE IF NOT EXISTS MINDMAP_DB.PUBLIC.SILVER_PAPERS (
     title STRING,
     abstract STRING, 
     conclusion TEXT,
+    full_text TEXT,
+    full_text_source STRING,
+    full_text_extracted_at TIMESTAMP_NTZ,
     reference_list VARIANT,
     citation_list VARIANT,
     embedding VECTOR(FLOAT, 384),
-    similar_embeddings_ids VARIANT -- List of paper IDs with similar embeddings (optional, can be populated later)
+    similar_embeddings_ids VARIANT, -- List of paper IDs with similar embeddings (optional, can be populated later)
+    tldr STRING
 );
 
 CREATE TABLE IF NOT EXISTS MINDMAP_DB.PUBLIC.SILVER_PAPER_SECTIONS (
@@ -92,4 +97,16 @@ CREATE TABLE IF NOT EXISTS MINDMAP_DB.PUBLIC.GOLD_SUMMARY_EVIDENCE (
     PRIMARY KEY (paper_id, summary_field, chunk_id),
     FOREIGN KEY (paper_id) REFERENCES MINDMAP_DB.PUBLIC.SILVER_PAPERS(id),
     FOREIGN KEY (chunk_id) REFERENCES MINDMAP_DB.PUBLIC.SILVER_PAPER_CHUNKS(chunk_id)
+);
+
+CREATE TABLE IF NOT EXISTS MINDMAP_DB.PUBLIC.APP_QA_LOGS (
+    log_id INT IDENTITY(1,1) PRIMARY KEY,
+    session_id STRING NOT NULL,
+    paper_id INT NOT NULL,
+    role STRING NOT NULL,
+    message TEXT NOT NULL,
+    rewritten_query STRING,
+    cited_chunk_ids VARIANT,
+    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    FOREIGN KEY (paper_id) REFERENCES MINDMAP_DB.PUBLIC.SILVER_PAPERS(id)
 );

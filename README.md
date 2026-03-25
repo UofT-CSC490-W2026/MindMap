@@ -72,6 +72,7 @@ export SNOWFLAKE_USER="<your_user>"
 export SNOWFLAKE_PASSWORD="<your_password>"
 export SNOWFLAKE_WAREHOUSE="MINDMAP_WH"
 export SEMANTIC_SCHOLAR_API_KEY="<your_semantic_scholar_api_key>"
+export OPENAI_API_KEY="<your_openai_api_key>"
 
 # 3) create/update Modal secrets used by workers
 
@@ -84,6 +85,10 @@ modal secret create snowflake-creds \
 
 modal secret create semantic-scholar-api \
   SEMANTIC_SCHOLAR_API_KEY="$SEMANTIC_SCHOLAR_API_KEY" \
+  --force
+
+modal secret create openai-api \
+  OPENAI_API_KEY="$OPENAI_API_KEY" \
   --force
 
 # 4) verify secrets exist
@@ -107,9 +112,18 @@ terraform workspace select dev || terraform workspace new dev
 # terraform workspace select prod # uncomment for prod
 
 # 3) create schemas
-export TF_VAR_snowflake_account="$SNOWFLAKE_ACCOUNT"
+# Preferred provider vars
+export TF_VAR_snowflake_organization_name="<your_org_name>" 
+export TF_VAR_snowflake_account_name="<your_account_name>"
 export TF_VAR_snowflake_user="$SNOWFLAKE_USER"
 export TF_VAR_snowflake_password="$SNOWFLAKE_PASSWORD"
+
+# organization_name is optional in this repo because providers.tf supports
+# legacy snowflake_account parsing, but organization_name + account_name is
+# recommended for clearer, future-proof configuration.
+
+# Legacy fallback (supported by this repo's provider compatibility logic)
+# export TF_VAR_snowflake_account="$SNOWFLAKE_ACCOUNT"
 
 terraform plan # preview changes
 terraform apply # apply changes
@@ -143,11 +157,16 @@ modal run app/main.py \
   --source arxiv \
   --max-results 30
 
-# target a specific Snowflake database/schema
+# target a specific Snowflake database
 modal run app/main.py \
   --query "$QUERY" \
-  --database MINDMAP_DB \
-  --schema PUBLIC
+  --database MINDMAP_DB
+
+# include optional Step 8 summarization (default is skipped)
+modal run app/main.py \
+  --query "$QUERY" \
+  --max-results 20 \
+  --skip-summary false
 ```
 
 ## Codebase Overview
@@ -171,6 +190,7 @@ MindMap/
 │       ├── ingestion.py
 │       ├── reasoning.py
 │       ├── semantic_search_worker.py
+│       ├── summary_worker.py
 │       └── transformation.py
 ├── react/                               # Frontend (Vite + React + TypeScript)
 │   ├── src/                             # UI source
@@ -199,6 +219,7 @@ Offline pipeline (`modal run app/main.py`):
 5. Chunking: Split papers into structured sections/chunks for RAG (`SILVER_PAPER_SECTIONS`, `SILVER_PAPER_CHUNKS`).
 6. Chunk embeddings + neighbor backfill: Embed chunks for dense retrieval and backfill similar IDs for older papers.
 7. Graph build: Materialize Gold-layer relationship edges from citations/similarity.
+8. Summarization (optional): Generate structured paper summaries in Gold via LLM.
 
 Online retrieval (API/worker path):
 
@@ -207,6 +228,7 @@ Online retrieval (API/worker path):
 3. RAG chunk retrieval (`retrieve_similar_chunks`) returns top matching chunks for grounded QA/summarization.
 
 The pipeline supports step-level skip flags (`--skip-*`) so maintainers can rerun only changed stages.
+Step 8 summarization is skipped by default (`skip_summary=True`) and can be enabled explicitly when needed.
 
 ## Features
 

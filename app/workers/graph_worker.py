@@ -20,15 +20,15 @@ def _fetch_papers(cur, paper_id: Optional[int], database: str = DATABASE) -> Lis
     silver = _silver_table(database=database)
     if paper_id is not None:
         cur.execute(
-            f'SELECT id, citation_list, similar_embeddings_ids FROM {silver} WHERE id = %s',
+            f'SELECT "id", "citation_list", "similar_embeddings_ids" FROM {silver} WHERE "id" = %s',
             (int(paper_id),),
         )
     else:
         cur.execute(
             f"""
-            SELECT id, citation_list, similar_embeddings_ids
+            SELECT "id", "citation_list", "similar_embeddings_ids"
             FROM {silver}
-            WHERE citation_list IS NOT NULL OR similar_embeddings_ids IS NOT NULL
+            WHERE "citation_list" IS NOT NULL OR "similar_embeddings_ids" IS NOT NULL
             """
         )
     return cur.fetchall()
@@ -71,10 +71,10 @@ def _citation_targets(cur, citations: Iterable[dict], database: str = DATABASE) 
     cur.execute(
         f"""
         WITH source_ss_ids(ss_id) AS (SELECT column1 FROM VALUES {values_sql})
-            SELECT DISTINCT sp.id
+            SELECT DISTINCT sp."id"
         FROM source_ss_ids src
         JOIN {_silver_table(database=database)} sp
-            ON sp.ss_id = src.ss_id
+            ON sp."ss_id" = src.ss_id
         """,
         ss_ids,
     )

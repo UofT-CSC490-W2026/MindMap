@@ -102,20 +102,20 @@ def _bulk_merge_edges(cur, edges: List[Tuple[int, int, str, float]], database: s
         MERGE INTO {_gold_table(database=database)} AS target
         USING (
             SELECT
-                column1 AS source_paper_id,
-                column2 AS target_paper_id,
-                column3 AS relationship_type,
-                column4 AS strength
+                column1 AS \"source_paper_id\",
+                column2 AS \"target_paper_id\",
+                column3 AS \"relationship_type\",
+                column4 AS \"strength\"
             FROM VALUES {values_sql}
         ) AS source
-        ON target.source_paper_id = source.source_paper_id
-           AND target.target_paper_id = source.target_paper_id
-           AND target.relationship_type = source.relationship_type
+        ON target.\"source_paper_id\" = source.\"source_paper_id\"
+           AND target.\"target_paper_id\" = source.\"target_paper_id\"
+           AND target.\"relationship_type\" = source.\"relationship_type\"
         WHEN MATCHED THEN
-            UPDATE SET target.strength = source.strength
+            UPDATE SET target.\"strength\" = source.\"strength\"
         WHEN NOT MATCHED THEN
-            INSERT (source_paper_id, target_paper_id, relationship_type, strength)
-            VALUES (source.source_paper_id, source.target_paper_id, source.relationship_type, source.strength)
+            INSERT (\"source_paper_id\", \"target_paper_id\", \"relationship_type\", \"strength\")
+            VALUES (source.\"source_paper_id\", source.\"target_paper_id\", source.\"relationship_type\", source.\"strength\")
         """,
         params,
     )

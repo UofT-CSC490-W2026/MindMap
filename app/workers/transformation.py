@@ -10,6 +10,8 @@ from utils import connect_to_snowflake
 _SS_MIN_INTERVAL_SECONDS = 1.05
 _ss_lock = threading.Lock()
 _ss_last_request_ts = 0.0
+MAX_FULL_TEXT_CHARS = 350000
+FULL_TEXT_PAGE_LIMIT = 80
 
 
 def _ss_get_json(url: str, params: dict | None = None, timeout: float = 20.0):
@@ -218,79 +220,120 @@ def _silver_papers_table(database: str = DATABASE) -> str:
     return qualify_table("SILVER_PAPERS", database=database)
 
 
+def _clean_extracted_text(text: str) -> str:
+    if not text:
+        return ""
+    text = text.replace("\x00", " ")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _truncate_text(text: str, max_chars: int = MAX_FULL_TEXT_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rsplit(" ", 1)[0].strip()
+
+
+def _extract_conclusion_from_text(full_text: str) -> str:
+    if not full_text:
+        return ""
+
+    conclusion_patterns = [
+        r"\n(?:[0-9.]*\s*)?Conclusion\b",
+        r"\n(?:[0-9.]*\s*)?Concluding Remarks\b",
+        r"\n(?:[0-9.]*\s*)?Summary and Discussion\b",
+    ]
+    stop_patterns = [
+        r"\n(?:[0-9.]*\s*)?References\b",
+        r"\n(?:[0-9.]*\s*)?Bibliography\b",
+        r"\n(?:[0-9.]*\s*)?Appendix\b",
+        r"\n(?:[0-9.]*\s*)?Acknowledg?ments?\b",
+        r"\n(?:[0-9.]*\s*)?Supplementary Material\b",
+    ]
+
+    start_idx = -1
+    for pattern in conclusion_patterns:
+        match = re.search(pattern, full_text, re.IGNORECASE)
+        if match:
+            start_idx = match.start()
+            break
+
+    if start_idx == -1:
+        return ""
+
+    text_after_start = full_text[start_idx:]
+    end_idx = len(text_after_start)
+
+    for pattern in stop_patterns:
+        match = re.search(pattern, text_after_start, re.IGNORECASE)
+        if match and match.start() > 50 and match.start() < end_idx:
+            end_idx = match.start()
+
+    conclusion_raw = text_after_start[:end_idx]
+    clean_text = re.sub(r"\$.*?\$", "", conclusion_raw)
+    clean_text = clean_text.replace("\n", " ")
+    return " ".join(clean_text.split())
+
+
+@app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret], max_containers=1, timeout=60 * 4)
+def extract_full_text_pdf(arxiv_id: str) -> Dict[str, Any]:
+    import httpx
+    import pymupdf
+
+    pdf_url = f"https://export.arxiv.org/pdf/{arxiv_id}.pdf"
+    try:
+        response = httpx.get(pdf_url, follow_redirects=True, timeout=45.0)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"Error downloading PDF for {arxiv_id}: {e}")
+        return {"full_text": "", "source": "unavailable", "truncated": False, "pages_processed": 0}
+
+    try:
+        doc = pymupdf.open(stream=response.content, filetype="pdf")
+    except Exception as e:
+        print(f"Warning: Could not parse PDF for {arxiv_id}: {e}")
+        return {"full_text": "", "source": "parse_failed", "truncated": False, "pages_processed": 0}
+
+    page_texts: List[str] = []
+    char_count = 0
+    pages_processed = 0
+    truncated = False
+
+    for page_idx in range(min(len(doc), FULL_TEXT_PAGE_LIMIT)):
+        page = doc[page_idx]
+        page_text = _clean_extracted_text(page.get_text())
+        if not page_text:
+            pages_processed += 1
+            continue
+
+        if char_count + len(page_text) + 2 > MAX_FULL_TEXT_CHARS:
+            remaining = max(0, MAX_FULL_TEXT_CHARS - char_count)
+            if remaining > 200:
+                page_texts.append(_truncate_text(page_text, max_chars=remaining))
+            truncated = True
+            break
+
+        page_texts.append(page_text)
+        char_count += len(page_text) + 2
+        pages_processed += 1
+
+    full_text = "\n\n".join(part for part in page_texts if part).strip()
+    return {
+        "full_text": full_text,
+        "source": "pdf" if full_text else "empty_pdf",
+        "truncated": truncated,
+        "pages_processed": pages_processed,
+    }
+
+
 
 # parse PDF to search for conclusion
 @app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret], max_containers=1, timeout=60*2)
 def extract_conclusion(arxiv_id: str):
-    import httpx
-    import pymupdf # PyMuPDF
-
     try:
-        # 1. Download
-        pdf_url = f"https://export.arxiv.org/pdf/{arxiv_id}.pdf"
-        print(f"Downloading: {pdf_url}")
-        response = httpx.get(pdf_url, follow_redirects=True, timeout=30.0)
-        
-        # 2. Open and Extract Text
-        try:
-            doc = pymupdf.open(stream=response.content, filetype="pdf")
-        except Exception as e:
-            print(f"Warning: Could not parse PDF for {arxiv_id}: {e}")
-            return ""
-        
-        full_text = ""
-        for page in doc:
-            full_text += page.get_text()
-
-        # 3. Robust Section Detection
-        # We look for Conclusion but also identify common "Stop" sections
-        conclusion_patterns = [
-            'Conclusion',
-            r'\n(?:[0-9.]*\s*)?Conclusion',
-            r'\n(?:[0-9.]*\s*)?Concluding Remarks',
-            r'\n(?:[0-9.]*\s*)?Summary and Discussion'
-        ]
-        
-        # Sections that typically follow a conclusion
-        stop_patterns = [
-            r'\n(?:[0-9.]*\s*)?References',
-            r'\n(?:[0-9.]*\s*)?Bibliography',
-            r'\n(?:[0-9.]*\s*)?Appendix',
-            r'\n(?:[0-9.]*\s*)?Acknowledgments',
-            r'\n(?:[0-9.]*\s*)?Supplementary Material'
-        ]
-
-        # Find the start of the conclusion
-        start_idx = -1
-        for pattern in conclusion_patterns:
-            match = re.search(pattern, full_text, re.IGNORECASE)
-            if match:
-                start_idx = match.start()
-                break
-
-        if start_idx == -1:
-            return ""
-
-        # Find the earliest occurrence of any 'stop' section AFTER the conclusion starts
-        text_after_start = full_text[start_idx:]
-        end_idx = len(text_after_start)
-
-        for pattern in stop_patterns:
-            match = re.search(pattern, text_after_start, re.IGNORECASE)
-            if match and match.start() > 50: # Ensure it's not matching the header itself
-                if match.start() < end_idx:
-                    end_idx = match.start()
-
-        conclusion_raw = text_after_start[:end_idx]
-
-        # 4. Clean formatting
-        # Removes LaTeX inline math, fix newlines, and strip double spaces
-        clean_text = re.sub(r'\$.*?\$', '', conclusion_raw) 
-        clean_text = clean_text.replace('\n', ' ')
-        clean_text = " ".join(clean_text.split())
-
-        return clean_text
-    
+        full_text_result = extract_full_text_pdf.local(arxiv_id)
+        return _extract_conclusion_from_text(full_text_result.get("full_text") or "")
     except Exception as e:
         print(f"Error extracting conclusion for {arxiv_id}: {e}")
         return ""
@@ -435,22 +478,27 @@ def transform_to_silver(
     import json
     
     try:
-        # 1. Primary conclusion strategy: Semantic Scholar TLDR (more reliable than PDF parsing).
-        conclusion = ""
+        # 1. Primary TLDR strategy: Semantic Scholar TLDR (more reliable than PDF parsing).
+        tldr_text = ""
+        conclusion_text = ""
+        full_text = ""
+        full_text_source = "unavailable"
         refs_data: List[dict] = []
         cites_data: List[dict] = []
         ss_id = None
 
+        full_text_result = extract_full_text_pdf.local(arxiv_id)
+        full_text = (full_text_result.get("full_text") or "").strip()
+        full_text_source = str(full_text_result.get("source") or "unavailable")
+        if full_text:
+            conclusion_text = _extract_conclusion_from_text(full_text)
+
         if ss_prefetched:
-            conclusion = (ss_prefetched.get("tldr") or "").strip()
+            tldr_text = (ss_prefetched.get("tldr") or "").strip()
             refs_data = ss_prefetched.get("references", []) or []
             cites_data = ss_prefetched.get("citations", []) or []
             ss_id = ss_prefetched.get("ss_id")
-            if not conclusion:
-                # Fallback for older/partial SS records where TLDR is unavailable.
-                conclusion = extract_conclusion.local(arxiv_id)
         else:
-            conclusion = extract_conclusion.local(arxiv_id)
             refs_task = get_references.local(arxiv_id)
             cites_task = fetch_connections_ss.local(arxiv_id, mode=1)
 
@@ -469,6 +517,9 @@ def transform_to_silver(
             except Exception:
                 pass
 
+        if not tldr_text:
+            tldr_text = conclusion_text or extract_conclusion.local(arxiv_id)
+
         conn = connect_to_snowflake(database=database, schema="SILVER")
         cur = conn.cursor()
 
@@ -479,35 +530,51 @@ def transform_to_silver(
                 MERGE INTO {silver_papers} target
                 USING (
                     SELECT 
-                        %s as "arxiv_id",
-                        %s as "ss_id",
-                        "raw_payload":title::STRING as "title",
-                        "raw_payload":summary::STRING as "abstract",
-                        %s as "conclusion",
-                        PARSE_JSON(%s) as "reference_list",
-                        PARSE_JSON(%s) as "citation_list"
+                        %s as arxiv_id,
+                        %s as ss_id,
+                        raw_payload:title::STRING as title,
+                        raw_payload:summary::STRING as abstract,
+                        %s as conclusion,
+                        %s as full_text,
+                        %s as full_text_source,
+                        %s as tldr,
+                        PARSE_JSON(%s) as reference_list,
+                        PARSE_JSON(%s) as citation_list
                     FROM {bronze_papers}
-                    WHERE "raw_payload":entry_id::STRING LIKE %s
+                    WHERE raw_payload:entry_id::STRING LIKE %s
                     LIMIT 1
                 ) source
-                ON target."arxiv_id" = source."arxiv_id" OR (target."ss_id" = source."ss_id" AND source."ss_id" IS NOT NULL)
+                ON target.arxiv_id = source.arxiv_id OR (target.ss_id = source.ss_id AND source.ss_id IS NOT NULL)
                 WHEN MATCHED THEN
                     UPDATE SET 
-                        target."arxiv_id" = COALESCE(target."arxiv_id", source."arxiv_id"),
-                        target."ss_id" = COALESCE(target."ss_id", source."ss_id"),
-                        target."conclusion" = source."conclusion",
-                        target."reference_list" = source."reference_list",
-                        target."citation_list" = source."citation_list"
+                        target.arxiv_id = COALESCE(target.arxiv_id, source.arxiv_id),
+                        target.ss_id = COALESCE(target.ss_id, source.ss_id),
+                        target.conclusion = COALESCE(source.conclusion, target.conclusion),
+                        target.full_text = COALESCE(NULLIF(source.full_text, ''), target.full_text),
+                        target.full_text_source = CASE
+                            WHEN source.full_text IS NOT NULL AND LENGTH(TRIM(source.full_text)) > 0 THEN source.full_text_source
+                            ELSE target.full_text_source
+                        END,
+                        target.full_text_extracted_at = CASE
+                            WHEN source.full_text IS NOT NULL AND LENGTH(TRIM(source.full_text)) > 0 THEN CURRENT_TIMESTAMP()
+                            ELSE target.full_text_extracted_at
+                        END,
+                        target.tldr = source.tldr,
+                        target.reference_list = source.reference_list,
+                        target.citation_list = source.citation_list
                 WHEN NOT MATCHED THEN
-                    INSERT ("arxiv_id", "ss_id", "title", "abstract", "conclusion", "reference_list", "citation_list")
-                    VALUES (source."arxiv_id", source."ss_id", source."title", source."abstract", source."conclusion", source."reference_list", source."citation_list");
+                    INSERT (arxiv_id, ss_id, title, abstract, conclusion, full_text, full_text_source, full_text_extracted_at, tldr, reference_list, citation_list)
+                    VALUES (source.arxiv_id, source.ss_id, source.title, source.abstract, source.conclusion, source.full_text, source.full_text_source, CURRENT_TIMESTAMP(), source.tldr, source.reference_list, source.citation_list);
             """.format(
                 silver_papers=_silver_papers_table(database=database),
                 bronze_papers=_bronze_papers_table(database=database),
             ), (
                 arxiv_id,
                 ss_id, 
-                conclusion,
+                conclusion_text,
+                full_text,
+                full_text_source,
+                tldr_text,
                 json.dumps(refs_data), 
                 json.dumps(cites_data), 
                 f"%{arxiv_id}%",
@@ -534,11 +601,11 @@ def get_bronze_worklist(database: str = DATABASE):
     cur = conn.cursor()
     
     # Get all IDs in Bronze
-    cur.execute(f'SELECT "raw_payload":entry_id::STRING FROM {_bronze_papers_table(database=database)}')
+    cur.execute(f'SELECT raw_payload:entry_id::STRING FROM {_bronze_papers_table(database=database)}')
     rows = cur.fetchall()
     
     # Optional: Filter out papers already in Silver to avoid redundant work
-    cur.execute(f'SELECT "arxiv_id" FROM {_silver_papers_table(database=database)}')
+    cur.execute(f'SELECT arxiv_id FROM {_silver_papers_table(database=database)}')
     existing_ids = {row[0] for row in cur.fetchall()}
     cur.close()
     conn.close()
@@ -610,10 +677,10 @@ def backfill_missing_ss_ids(
     try:
         cur.execute(
             f"""
-                        SELECT "id", "arxiv_id"
+                        SELECT id, arxiv_id
                         FROM {silver}
-                        WHERE "ss_id" IS NULL
-                            AND "arxiv_id" IS NOT NULL
+                        WHERE ss_id IS NULL
+                            AND arxiv_id IS NOT NULL
                         LIMIT {int(limit)}
             """
         )
@@ -684,10 +751,10 @@ def backfill_conclusions_from_tldr(
     database: str = DATABASE,
 ):
     """
-    Fill SILVER_PAPERS.conclusion from Semantic Scholar TLDR.
+    Fill SILVER_PAPERS.tldr from Semantic Scholar TLDR.
 
-    Default behavior only fills missing/blank conclusions. If overwrite_existing=True,
-    existing conclusions are replaced by TLDR when available.
+    Default behavior only fills missing/blank TLDR values. If overwrite_existing=True,
+    existing TLDR values are replaced when available.
     """
     silver = _silver_papers_table(database=database)
 
@@ -697,19 +764,19 @@ def backfill_conclusions_from_tldr(
         if overwrite_existing:
             cur.execute(
                 f"""
-                SELECT "id", "arxiv_id"
+                SELECT id, arxiv_id
                 FROM {silver}
-                WHERE "arxiv_id" IS NOT NULL
+                WHERE arxiv_id IS NOT NULL
                 LIMIT {int(limit)}
                 """
             )
         else:
             cur.execute(
                 f"""
-                SELECT "id", "arxiv_id"
+                SELECT id, arxiv_id
                 FROM {silver}
-                WHERE "arxiv_id" IS NOT NULL
-                  AND ("conclusion" IS NULL OR LENGTH(TRIM("conclusion")) = 0)
+                WHERE arxiv_id IS NOT NULL
+                                    AND (tldr IS NULL OR LENGTH(TRIM(tldr)) = 0)
                 LIMIT {int(limit)}
                 """
             )
@@ -719,7 +786,7 @@ def backfill_conclusions_from_tldr(
             return {
                 "status": "ok",
                 "updated": 0,
-                "note": "No eligible rows for conclusion backfill.",
+                "note": "No eligible rows for TLDR backfill.",
             }
 
         by_arxiv_id = {arxiv_id: pid for pid, arxiv_id in rows}
@@ -743,7 +810,7 @@ def backfill_conclusions_from_tldr(
                 cur.executemany(
                     f"""
                     UPDATE {silver}
-                    SET conclusion = %s
+                                        SET tldr = %s
                     WHERE id = %s
                     """,
                     updates,
@@ -752,9 +819,9 @@ def backfill_conclusions_from_tldr(
                 cur.executemany(
                     f"""
                     UPDATE {silver}
-                    SET conclusion = %s
+                                        SET tldr = %s
                     WHERE id = %s
-                      AND (conclusion IS NULL OR LENGTH(TRIM(conclusion)) = 0)
+                                            AND (tldr IS NULL OR LENGTH(TRIM(tldr)) = 0)
                     """,
                     updates,
                 )

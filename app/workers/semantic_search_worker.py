@@ -17,6 +17,10 @@ def _chunks_table(database: str = DATABASE) -> str:
     return qualify_table("SILVER_PAPER_CHUNKS", database=database)
 
 
+def _estimate_token_count(text: str) -> int:
+    return max(1, len(text) // 4)
+
+
 def _parse_cached_ids(value: Any, k: int) -> List[int]:
     if value is None:
         return []
@@ -301,6 +305,7 @@ def retrieve_similar_chunks(
                 "paper_id": int(r[1]),
                 "section_id": int(r[2]) if r[2] else None,
                 "chunk_text": r[3],
+                "chunk_type": r[4],
                 "section_name": r[4],
                 "score": float(r[5]),
                 "database": database,
@@ -309,6 +314,95 @@ def retrieve_similar_chunks(
         ]
 
         return results
+    finally:
+        cur.close()
+        conn.close()
+
+
+def retrieve_similar_chunks_local(
+    query_text: str,
+    top_k: int = 5,
+    paper_id: Optional[int] = None,
+    score_threshold: float = 0.3,
+    model_name: str = "sentence-transformers/all-MiniLM-L12-v2",
+    max_context_chars: int = 20000,
+    database: str = DATABASE,
+    schema: str = SCHEMA,
+) -> List[Dict[str, Any]]:
+    """
+    Local helper for paper-scoped retrieval with bounded returned context.
+    Intended for other workers to reuse without duplicating selection logic.
+    """
+    import importlib
+
+    sentence_transformers = importlib.import_module("sentence_transformers")
+    SentenceTransformer = sentence_transformers.SentenceTransformer
+
+    q = (query_text or "").strip()
+    if not q:
+        return []
+
+    chunks = _chunks_table(database=database, schema=schema)
+    model = SentenceTransformer(model_name)
+    qvec = model.encode([q], normalize_embeddings=True)[0].tolist()
+
+    conn = connect_to_snowflake(database=database, schema=schema)
+    cur = conn.cursor()
+    try:
+        paper_filter = ""
+        params = [json.dumps(qvec), json.dumps(qvec), float(score_threshold)]
+        if paper_id is not None:
+            paper_filter = "AND c.paper_id = %s"
+            params.append(int(paper_id))
+        params.append(max(int(top_k) * 3, int(top_k)))
+
+        cur.execute(
+            f"""
+            SELECT
+              c.chunk_id,
+              c.paper_id,
+              c.section_id,
+              c.chunk_text,
+              c.chunk_type,
+              c.token_estimate,
+              VECTOR_COSINE_SIMILARITY(c.embedding, PARSE_JSON(%s)::VECTOR(FLOAT, 384)) AS score
+            FROM {chunks} c
+            WHERE c.embedding IS NOT NULL
+              AND VECTOR_COSINE_SIMILARITY(c.embedding, PARSE_JSON(%s)::VECTOR(FLOAT, 384)) >= %s
+              {paper_filter}
+            ORDER BY score DESC
+            LIMIT %s
+            """,
+            params,
+        )
+        rows = cur.fetchall()
+
+        selected = []
+        current_chars = 0
+        for row in rows:
+            chunk_text = (row[3] or "").strip()
+            if not chunk_text:
+                continue
+            if selected and current_chars + len(chunk_text) > max_context_chars:
+                break
+            selected.append(
+                {
+                    "chunk_id": int(row[0]),
+                    "paper_id": int(row[1]),
+                    "section_id": int(row[2]) if row[2] else None,
+                    "chunk_text": chunk_text,
+                    "chunk_type": row[4] or "body",
+                    "token_estimate": int(row[5] or _estimate_token_count(chunk_text)),
+                    "score": float(row[6]),
+                    "database": database,
+                    "schema": schema,
+                }
+            )
+            current_chars += len(chunk_text)
+            if len(selected) >= int(top_k):
+                break
+
+        return selected
     finally:
         cur.close()
         conn.close()

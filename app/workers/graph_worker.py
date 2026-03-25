@@ -16,18 +16,19 @@ def _gold_table(database: str = DATABASE) -> str:
     return qualify_table("GOLD_PAPER_RELATIONSHIPS", database=database)
 
 
+def _fetch_papers(cur, paper_id: Optional[int], database: str = DATABASE) -> List[Tuple[int, object, object]]:
     silver = _silver_table(database=database)
     if paper_id is not None:
         cur.execute(
-            f'SELECT "id", "citation_list", "similar_embeddings_ids" FROM {silver} WHERE "id" = %s',
+            f'SELECT id, citation_list, similar_embeddings_ids FROM {silver} WHERE id = %s',
             (int(paper_id),),
         )
     else:
         cur.execute(
             f"""
-            SELECT "id", "citation_list", "similar_embeddings_ids"
+            SELECT id, citation_list, similar_embeddings_ids
             FROM {silver}
-            WHERE "citation_list" IS NOT NULL OR "similar_embeddings_ids" IS NOT NULL
+            WHERE citation_list IS NOT NULL OR similar_embeddings_ids IS NOT NULL
             """
         )
     return cur.fetchall()
@@ -69,11 +70,11 @@ def _citation_targets(cur, citations: Iterable[dict], database: str = DATABASE) 
     values_sql = ", ".join(["(%s)"] * len(ss_ids))
     cur.execute(
         f"""
-        WITH source_ss_ids("ss_id") AS (SELECT column1 FROM VALUES {values_sql})
-        SELECT DISTINCT sp."id"
+        WITH source_ss_ids(ss_id) AS (SELECT column1 FROM VALUES {values_sql})
+            SELECT DISTINCT sp.id
         FROM source_ss_ids src
         JOIN {_silver_table(database=database)} sp
-            ON sp."ss_id" = src."ss_id"
+            ON sp.ss_id = src.ss_id
         """,
         ss_ids,
     )
@@ -90,6 +91,7 @@ def _dedupe_edges(edges: Iterable[Tuple[int, int, str, float]]) -> List[Tuple[in
     return [(sid, tid, rel, strength) for (sid, tid, rel), strength in seen.items()]
 
 
+def _bulk_merge_edges(cur, edges: List[Tuple[int, int, str, float]], database: str = DATABASE) -> int:
     if not edges:
         return 0
 
@@ -100,20 +102,20 @@ def _dedupe_edges(edges: Iterable[Tuple[int, int, str, float]]) -> List[Tuple[in
         MERGE INTO {_gold_table(database=database)} AS target
         USING (
             SELECT
-                column1 AS "source_paper_id",
-                column2 AS "target_paper_id",
-                column3 AS "relationship_type",
-                column4 AS "strength"
+                column1 AS source_paper_id,
+                column2 AS target_paper_id,
+                column3 AS relationship_type,
+                column4 AS strength
             FROM VALUES {values_sql}
         ) AS source
-        ON target."source_paper_id" = source."source_paper_id"
-           AND target."target_paper_id" = source."target_paper_id"
-           AND target."relationship_type" = source."relationship_type"
+        ON target.source_paper_id = source.source_paper_id
+           AND target.target_paper_id = source.target_paper_id
+           AND target.relationship_type = source.relationship_type
         WHEN MATCHED THEN
-            UPDATE SET target."strength" = source."strength"
+            UPDATE SET target.strength = source.strength
         WHEN NOT MATCHED THEN
-            INSERT ("source_paper_id", "target_paper_id", "relationship_type", "strength")
-            VALUES (source."source_paper_id", source."target_paper_id", source."relationship_type", source."strength")
+            INSERT (source_paper_id, target_paper_id, relationship_type, strength)
+            VALUES (source.source_paper_id, source.target_paper_id, source.relationship_type, source.strength)
         """,
         params,
     )

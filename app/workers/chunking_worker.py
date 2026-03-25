@@ -97,7 +97,7 @@ def _fetch_unchunked_papers(cur, database: str = DATABASE, limit: int = 100) -> 
         LEFT JOIN {sections} sec
             ON sec."paper_id" = sp."id"
         WHERE sec."section_id" IS NULL
-                    AND (sp.abstract IS NOT NULL OR sp.conclusion IS NOT NULL)
+            AND (sp."abstract" IS NOT NULL OR sp."conclusion" IS NOT NULL)
         LIMIT {int(limit)}
         """
     )
@@ -126,7 +126,7 @@ def _insert_section_and_chunks(
     cur.execute(
         f"""
         INSERT INTO {sections}
-        (paper_id, section_name, section_order, content, token_estimate)
+        ("paper_id", "section_name", "section_order", "content", "token_estimate")
         VALUES (%s, %s, %s, %s, %s)
         """,
         (int(paper_id), section_name, int(section_index), content, int(word_count)),
@@ -176,7 +176,7 @@ def _insert_section_and_chunks(
             cur.executemany(
                 f"""
                 INSERT INTO {chunks}
-                (paper_id, section_id, chunk_index, chunk_text, token_estimate, chunk_type)
+                ("paper_id", "section_id", "chunk_index", "chunk_text", "token_estimate", "chunk_type")
                 VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 batch_to_insert,

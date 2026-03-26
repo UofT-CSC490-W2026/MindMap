@@ -5,6 +5,7 @@ Each test covers a specific edge case or use case in the chunking pipeline.
 Comments above each test explain the rationale for the test case.
 """
 
+import pytest
 from unittest.mock import MagicMock, patch
 
 from workers.chunking_worker import (
@@ -204,3 +205,140 @@ def test_chunk_papers_happy_path():
     assert result["status"] == "ok"
     assert "papers_chunked" in result
     assert "chunks_created" in result
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage tests
+# ---------------------------------------------------------------------------
+
+def test_require_columns_raises_on_missing():
+    # Line 47: RuntimeError when required columns are missing
+    from workers.chunking_worker import _require_columns
+    with pytest.raises(RuntimeError, match="Missing required columns"):
+        _require_columns({"id": '"ID"'}, ["id", "missing_col"], "MY_TABLE")
+
+
+def test_normalize_text_empty_string():
+    # Line 77: early return for empty/falsy input
+    assert _normalize_text("") == ""
+    assert _normalize_text(None) == ""
+
+
+def test_truncate_words_empty_input():
+    # Line 87: (text or "").split() on empty/None
+    assert _truncate_words("", 5) == ""
+    assert _truncate_words(None, 5) == ""
+
+
+def test_canonical_section_name_abstract_prefix():
+    # Line 94: startswith("abstract") branch
+    assert _canonical_section_name("abstract") == "abstract"
+    assert _canonical_section_name("Abstract: Overview") == "abstract"
+
+
+def test_canonical_section_name_limitations():
+    # Line 110: startswith("limitation") branch
+    assert _canonical_section_name("limitations") == "limitations"
+    assert _canonical_section_name("limitation of this work") == "limitations"
+
+
+def test_canonical_section_name_passthrough_names():
+    # Lines 126-131: introduction/background/related work returned as-is
+    assert _canonical_section_name("introduction") == "introduction"
+    assert _canonical_section_name("background") == "background"
+    assert _canonical_section_name("related work") == "related work"
+
+
+def test_split_full_text_empty():
+    # Line 147: empty text returns []
+    assert _split_full_text_into_sections("") == []
+    assert _split_full_text_into_sections(None) == []
+
+
+def test_split_full_text_skips_empty_section_content():
+    # Lines 149/152: sections with no content after header are skipped
+    text = "Introduction\n\nMethods\nActual methods content here."
+    sections = _split_full_text_into_sections(text)
+    names = [s["section_name"] for s in sections]
+    assert "methods" in names
+
+
+def test_split_into_chunks_empty_text():
+    # Line 168: empty/whitespace-only text returns []
+    assert _split_into_chunks("") == []
+    assert _split_into_chunks("   ") == []
+
+
+def test_build_sections_with_full_text_and_abstract():
+    # Lines 183-188: dedup logic — abstract already in full_text sections shouldn't be duplicated
+    paper = {
+        "full_text": "Abstract\nThis is the abstract.\n\nMethods\nThis is the methods.",
+        "abstract": "This is the abstract.",
+        "conclusion": "",
+    }
+    sections = _build_sections_for_paper(paper)
+    abstract_sections = [s for s in sections if s["section_name"] == "abstract"]
+    # Should not have duplicate abstract entries
+    assert len(abstract_sections) <= 1
+
+
+def test_chunk_papers_no_papers():
+    # Lines 351: early return when no papers to chunk
+    cursor = MagicMock()
+    cursor.fetchall.side_effect = [
+        [("ID",), ("ARXIV_ID",), ("TITLE",), ("ABSTRACT",), ("CONCLUSION",), ("FULL_TEXT",)],
+        [("SECTION_ID",), ("PAPER_ID",)],
+        [],  # no unchunked papers
+    ]
+    cursor.description = []
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    with patch("workers.chunking_worker.connect_to_snowflake", return_value=conn):
+        result = chunk_papers(limit=10)
+
+    assert result["status"] == "ok"
+    assert result["papers_chunked"] == 0
+    assert "no new papers" in result["note"].lower()
+
+
+def test_chunk_papers_skips_paper_with_no_sections():
+    # Lines 376-378: paper with no usable text is skipped
+    cursor = MagicMock()
+    cursor.fetchall.side_effect = [
+        [("ID",), ("ARXIV_ID",), ("TITLE",), ("ABSTRACT",), ("CONCLUSION",), ("FULL_TEXT",)],
+        [("SECTION_ID",), ("PAPER_ID",)],
+        [(1, "2301.00001", "Title", None, None, None)],  # all text fields None
+    ]
+    cursor.description = [("id",), ("arxiv_id",), ("title",), ("abstract",), ("conclusion",), ("full_text",)]
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    with patch("workers.chunking_worker.connect_to_snowflake", return_value=conn):
+        result = chunk_papers(limit=1)
+
+    assert result["papers_skipped"] == 1
+
+
+def test_chunk_papers_skips_oversized_section():
+    # Lines 389-393: section exceeding MAX_SECTION_WORDS is skipped
+    from workers.chunking_worker import MAX_SECTION_WORDS
+    big_content = " ".join(["word"] * (MAX_SECTION_WORDS + 1))
+
+    cursor = MagicMock()
+    cursor.fetchall.side_effect = [
+        [("ID",), ("ARXIV_ID",), ("TITLE",), ("ABSTRACT",), ("CONCLUSION",), ("FULL_TEXT",)],
+        [("SECTION_ID",), ("PAPER_ID",)],
+        [(1, "2301.00001", "Title", "short abstract", None, None)],
+    ]
+    cursor.description = [("id",), ("arxiv_id",), ("title",), ("abstract",), ("conclusion",), ("full_text",)]
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    # Patch _build_sections_for_paper to return an oversized section
+    oversized_section = [{"section_name": "body", "content": big_content}]
+    with patch("workers.chunking_worker.connect_to_snowflake", return_value=conn):
+        with patch("workers.chunking_worker._build_sections_for_paper", return_value=oversized_section):
+            result = chunk_papers(limit=1)
+
+    assert result["sections_skipped"] >= 1

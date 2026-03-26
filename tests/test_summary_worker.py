@@ -160,3 +160,105 @@ def test_batch_summarize_papers_no_papers():
 
     assert result["status"] == "ok"
     assert result["papers_to_summarize"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage tests
+# ---------------------------------------------------------------------------
+
+def test_estimate_token_count():
+    # Line 12 (sys.path insert) + line 109/111/122 (_estimate_token_count)
+    from workers.summary_worker import _estimate_token_count
+    assert _estimate_token_count("hello world") >= 1
+    assert _estimate_token_count("a" * 400) == 100
+
+
+def test_fetch_paper_chunks_empty():
+    # Lines 109/111: _fetch_paper_chunks returns [] when no rows
+    from workers.summary_worker import _fetch_paper_chunks
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = []
+    result = _fetch_paper_chunks(mock_cursor, paper_id=1)
+    assert result == []
+
+
+def test_insert_evidence_empty_chunk_ids():
+    # Line 185-186: _insert_evidence skips when chunk_ids is empty
+    from workers.summary_worker import _insert_evidence
+    mock_cursor = MagicMock()
+    _insert_evidence(mock_cursor, paper_id=1, chunk_ids=[])
+    mock_cursor.execute.assert_not_called()
+
+
+def test_generate_paper_summary_llm_failure():
+    # Lines 341-343: LLM raises → returns error with llm_generation_failed
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.side_effect = [
+        None,                          # no existing summary
+        (1, "Test Title", "Abstract"), # paper found
+    ]
+    mock_cursor.fetchall.return_value = [
+        (1, "Chunk text about methods.", "methods", 50),
+    ]
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    mock_llm_instance = MagicMock()
+    mock_llm_instance.generate_structured_summary.side_effect = RuntimeError("LLM timeout")
+
+    with patch("workers.summary_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("workers.summary_worker.LLMClient", return_value=mock_llm_instance):
+            result = generate_paper_summary(paper_id=1)
+
+    assert result["status"] == "error"
+    assert "llm_generation_failed" in result["error"]
+
+
+def test_batch_summarize_papers_with_one_paper():
+    # Lines 441-486: batch loop with one paper that succeeds
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        (1, "2301.00001", "Test Title", "Abstract"),
+    ]
+    mock_cursor.description = [("id",), ("arxiv_id",), ("title",), ("abstract",)]
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    original = sw.generate_paper_summary
+    mock_fn = MagicMock()
+    mock_fn.remote = MagicMock(return_value={"status": "ok"})
+    sw.generate_paper_summary = mock_fn
+
+    try:
+        with patch("workers.summary_worker.connect_to_snowflake", return_value=mock_conn):
+            result = batch_summarize_papers(limit=10)
+    finally:
+        sw.generate_paper_summary = original
+
+    assert result["status"] == "ok"
+    assert result["papers_to_summarize"] == 1
+    assert result["papers_successful"] == 1
+
+
+def test_batch_summarize_papers_with_failed_paper():
+    # Lines 441-486: batch loop where paper fails
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        (1, "2301.00001", "Test Title", "Abstract"),
+    ]
+    mock_cursor.description = [("id",), ("arxiv_id",), ("title",), ("abstract",)]
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    original = sw.generate_paper_summary
+    mock_fn = MagicMock()
+    mock_fn.remote = MagicMock(return_value={"status": "error", "error": "no_chunks_found"})
+    sw.generate_paper_summary = mock_fn
+
+    try:
+        with patch("workers.summary_worker.connect_to_snowflake", return_value=mock_conn):
+            result = batch_summarize_papers(limit=10)
+    finally:
+        sw.generate_paper_summary = original
+
+    assert result["papers_failed"] == 1

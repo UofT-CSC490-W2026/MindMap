@@ -4,6 +4,7 @@ Tests for workers/embedding_worker.py
 
 import importlib
 import sys
+import pytest
 from unittest.mock import MagicMock, patch
 
 from workers.embedding_worker import (
@@ -216,3 +217,75 @@ def test_run_embedding_batch_with_populate_similar():
 
     assert result["status"] == "ok"
     assert result["neighbors_populated"] is True
+
+
+# ---------------------------------------------------------------------------
+# _require_columns raises on missing
+# ---------------------------------------------------------------------------
+
+def test_require_columns_raises():
+    from workers.embedding_worker import _require_columns
+    with pytest.raises(RuntimeError, match="Missing required columns"):
+        _require_columns({"id": '"ID"'}, ["id", "nonexistent"], "MY_TABLE")
+
+
+# ---------------------------------------------------------------------------
+# _update_embeddings — empty rows is a no-op
+# ---------------------------------------------------------------------------
+
+def test_update_embeddings_empty_rows():
+    from workers.embedding_worker import _update_embeddings
+    mock_cursor = MagicMock()
+    _update_embeddings(mock_cursor, database="DB", rows=[])
+    mock_cursor.executemany.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# run_embedding_batch — all rows have empty text (skipped_empty_text path)
+# ---------------------------------------------------------------------------
+
+def test_run_embedding_batch_all_empty_text():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("ID",), ("TITLE",), ("CONCLUSION",), ("ABSTRACT",), ("EMBEDDING",)],
+        [(1, "", "", "")],  # row with no usable text
+    ]
+    mock_cursor.description = [("id",), ("title",), ("conclusion",), ("abstract",)]
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    mock_st = MagicMock()
+    with patch("workers.embedding_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("importlib.import_module", return_value=mock_st):
+            result = run_embedding_batch(limit=1)
+
+    assert result["status"] == "ok"
+    assert result["embedded"] == 0
+    assert result.get("skipped_empty_text") == 1
+
+
+# ---------------------------------------------------------------------------
+# run_chunk_embedding_batch — chunks with empty text are skipped
+# ---------------------------------------------------------------------------
+
+def test_run_chunk_embedding_batch_empty_text_chunks():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("CHUNK_ID",), ("PAPER_ID",), ("SECTION_ID",), ("CHUNK_TEXT",), ("EMBEDDING",)],
+        [(1, 10, 5, "   ")],  # whitespace-only chunk text
+    ]
+    mock_cursor.description = [("chunk_id",), ("paper_id",), ("section_id",), ("chunk_text",)]
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    mock_st = MagicMock()
+    with patch("workers.embedding_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("importlib.import_module", return_value=mock_st):
+            result = run_chunk_embedding_batch(limit=1)
+
+    assert result["status"] == "ok"
+    assert result["chunks_embedded"] == 0

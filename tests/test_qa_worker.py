@@ -159,3 +159,77 @@ def test_answer_paper_question_with_chunks():
 
     assert result["status"] == "ok"
     assert "answer" in result
+
+
+# ---------------------------------------------------------------------------
+# _qa_logs_table, _load_history, _store_message helpers
+# ---------------------------------------------------------------------------
+
+def test_load_history_with_json_cited_chunks():
+    # Lines 76-81: cited_chunk_ids as JSON string gets parsed
+    # Test the JSON parsing logic directly by calling the inner loop logic
+    import json as _json
+    from workers.qa_worker import _load_history
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        ("user", "Hello", None, '[1, 2, 3]'),
+        ("assistant", "Hi", None, None),
+    ]
+    mock_cursor.execute.return_value = None
+
+    # Patch the table name function so the SELECT runs against our mock
+    with patch("workers.qa_worker._qa_logs_table", return_value="MOCK_TABLE"):
+        history = _load_history(mock_cursor, session_id="s1", paper_id=1, schema="SILVER")
+
+    assert history[0]["cited_chunk_ids"] == [1, 2, 3]
+    assert history[1]["cited_chunk_ids"] == []
+
+
+def test_looks_ambiguous_empty_string():
+    # Line 131: empty string returns False
+    assert _looks_ambiguous("") is False
+
+
+def test_answer_paper_question_with_history_rewrite():
+    # Lines 181-189: ambiguous follow-up with history triggers query rewrite
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        ("user", "What is the method?", None, None),
+    ]
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    mock_llm_instance = MagicMock()
+    mock_llm_instance.rewrite_followup_question.return_value = "What is the specific method used in this paper?"
+    mock_llm_instance.answer_grounded_question.return_value = {
+        "result": MagicMock(answer="The method is X.", cited_chunk_ids=[1])
+    }
+
+    with patch("workers.qa_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("workers.qa_worker.retrieve_similar_chunks_local", return_value=[
+            {"chunk_id": 1, "chunk_text": "Method text.", "chunk_type": "methods", "paper_id": 1, "section_id": 1, "score": 0.9}
+        ]):
+            with patch("workers.qa_worker.LLMClient", return_value=mock_llm_instance):
+                with patch("workers.qa_worker.qualify_table", return_value="DB.SILVER.APP_QA_LOGS"):
+                    # "it" is a pronoun + short query → triggers rewrite
+                    result = answer_paper_question(paper_id=1, question="what does it do")
+
+    assert result["status"] == "ok"
+
+
+def test_answer_paper_question_exception_path():
+    # Lines 263-266: exception in main body returns error status
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = MagicMock(
+        fetchall=MagicMock(return_value=[]),
+        execute=MagicMock(side_effect=RuntimeError("DB down")),
+    )
+    with patch("workers.qa_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("workers.qa_worker.qualify_table", return_value="DB.SILVER.APP_QA_LOGS"):
+            result = answer_paper_question(paper_id=1, question="what is the method?")
+    assert result["status"] == "error"
+    assert "DB down" in result["error"]

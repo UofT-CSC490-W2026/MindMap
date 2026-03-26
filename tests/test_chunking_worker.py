@@ -383,3 +383,15 @@ def test_chunk_papers_outer_exception_rolls_back_and_raises():
             chunk_papers(limit=1)
 
     conn.rollback.assert_called_once()
+
+
+def test_build_sections_skips_duplicate_full_text_sections():
+    duplicate_sections = [
+        {"section_name": "body", "content": "same content"},
+        {"section_name": "body", "content": "same content"},
+    ]
+
+    with patch("workers.chunking_worker._split_full_text_into_sections", return_value=duplicate_sections):
+        sections = _build_sections_for_paper({"full_text": "irrelevant", "abstract": "", "conclusion": ""})
+
+    assert sections == [{"section_name": "body", "content": "same content"}]

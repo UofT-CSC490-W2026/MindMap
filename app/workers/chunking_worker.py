@@ -190,8 +190,9 @@ def _split_into_chunks(
         if chunk_text.strip():
             chunks.append(chunk_text)
 
-        overlap_buffer = chunk_words[-overlap_words:] if len(chunk_words) > overlap_words else chunk_words
-        i += len(chunk_words) - len(overlap_buffer)
+        overlap_buffer = chunk_words[-overlap_words:] if overlap_words > 0 and len(chunk_words) > overlap_words else []
+        advance = len(chunk_words) - len(overlap_buffer)
+        i += max(advance, 1)
 
     return chunks
 

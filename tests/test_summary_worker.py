@@ -262,3 +262,43 @@ def test_batch_summarize_papers_with_failed_paper():
         sw.generate_paper_summary = original
 
     assert result["papers_failed"] == 1
+
+
+def test_fetch_paper_chunks_respects_context_limit_and_skips_blank_text():
+    from workers.summary_worker import _fetch_paper_chunks
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        (1, "short text", "abstract", 3),
+        (2, "   ", "methods", 4),
+        (3, "x" * 100, "results", 5),
+    ]
+
+    result = _fetch_paper_chunks(mock_cursor, paper_id=1, max_context_chars=20)
+
+    assert [row["chunk_id"] for row in result] == [1]
+
+
+def test_insert_summary_calls_merge():
+    from workers.summary_worker import _insert_summary
+
+    summary = MagicMock()
+    summary.to_dict.return_value = {"research_question": "Q"}
+    mock_cursor = MagicMock()
+
+    _insert_summary(mock_cursor, paper_id=1, summary=summary)
+
+    mock_cursor.execute.assert_called_once()
+
+
+def test_batch_summarize_papers_top_level_exception():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = RuntimeError("db failed")
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    with patch("workers.summary_worker.connect_to_snowflake", return_value=mock_conn):
+        result = batch_summarize_papers(limit=1)
+
+    assert result["status"] == "error"
+    assert "db failed" in result["error"]

@@ -68,6 +68,10 @@ def test_extract_ref_arxiv_id_none_for_non_matching():
     assert _extract_ref_arxiv_id(ref) is None
 
 
+def test_extract_ref_arxiv_id_none_for_non_string_non_dict():
+    assert _extract_ref_arxiv_id(123) is None
+
+
 # ---------------------------------------------------------------------------
 # _extract_ref_text
 # ---------------------------------------------------------------------------
@@ -190,3 +194,44 @@ def test_run_citation_aware_embedding_batch_with_paper_no_refs():
     assert result["status"] == "ok"
     assert result["updated"] == 1
     assert result["skipped_no_refs"] == 1
+
+
+def test_run_citation_aware_embedding_batch_with_reference_embeddings():
+    import types
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("pid1", "2301.00001", "Title", "Abstract")],
+        [("ref-paper",)],
+        [([0.0, 1.0],)],
+    ]
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    mock_vec = MagicMock()
+    mock_vec.tolist.return_value = [1.0, 0.0]
+    mock_model = MagicMock()
+    mock_model.encode.return_value = [mock_vec]
+    sys.modules["sentence_transformers"] = types.SimpleNamespace(
+        SentenceTransformer=MagicMock(return_value=mock_model)
+    )
+    sys.modules["numpy"] = types.SimpleNamespace(
+        float32="float32",
+        array=lambda values, dtype=None: values,
+        mean=lambda values, axis=0: MagicMock(tolist=MagicMock(return_value=[0.0, 1.0])),
+    )
+
+    mock_get_citations.remote.return_value = {
+        "references": [{"ref_text": "Ref", "ref_arxiv_id": "2301.00002"}]
+    }
+
+    with patch("workers.citation_aware_embedding_worker.connect_to_snowflake", return_value=mock_conn):
+        result = run_citation_aware_embedding_batch(limit=1, alpha=0.75)
+
+    assert result["status"] == "ok"
+    assert result["updated"] == 1
+    assert result["skipped_no_refs"] == 0
+    assert result["skipped_no_ref_embs"] == 0

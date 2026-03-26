@@ -405,3 +405,44 @@ def test_main_entrypoint_arxiv():
     with patch("workers.ingestion.ingest_from_arxiv") as mock_arxiv:
         mock_arxiv.remote = MagicMock(return_value=None)
         main(query="test", max_results=1, source="arxiv")
+
+
+def test_ss_get_json_429_then_401_falls_back_to_public():
+    from workers.ingestion import _ss_get_json
+
+    first = MagicMock(status_code=429)
+    first.raise_for_status.return_value = None
+    first.json.return_value = {}
+
+    second = MagicMock(status_code=401)
+    second.raise_for_status.return_value = None
+    second.json.return_value = {}
+
+    third = MagicMock(status_code=200)
+    third.raise_for_status.return_value = None
+    third.json.return_value = {"ok": True}
+
+    mock_httpx = MagicMock()
+    mock_httpx.get.side_effect = [first, second, third]
+    mock_httpx.HTTPStatusError = Exception
+
+    with patch.dict(sys.modules, {"httpx": mock_httpx}):
+        with patch("workers.ingestion.time.sleep"):
+            result = _ss_get_json("https://example.com", {"q": "x"})
+
+    assert result == {"ok": True}
+    assert mock_httpx.get.call_count == 3
+
+
+def test_ingest_from_semantic_scholar_empty_query_raises():
+    with pytest.raises(ValueError, match="non-empty query"):
+        ingest_from_semantic_scholar(query="   ", max_results=1)
+
+
+def test_main_entrypoint_openalex():
+    from workers.ingestion import main
+
+    with patch("workers.ingestion.ingest_from_openalex", return_value=None) as mock_openalex:
+        main(query="test", max_results=1, source="openalex")
+
+    mock_openalex.assert_called_once()

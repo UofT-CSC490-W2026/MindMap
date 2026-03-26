@@ -342,3 +342,44 @@ def test_chunk_papers_skips_oversized_section():
             result = chunk_papers(limit=1)
 
     assert result["sections_skipped"] >= 1
+
+
+def test_build_sections_dedupes_duplicate_full_text_and_abstract():
+    paper = {
+        "full_text": "Abstract\nSame text\n\nConclusion\nDone",
+        "abstract": "Same text",
+        "conclusion": "Done",
+    }
+
+    sections = _build_sections_for_paper(paper)
+
+    assert [section["section_name"] for section in sections] == ["abstract", "conclusion"]
+
+
+def test_build_sections_fallback_includes_abstract_and_conclusion():
+    sections = _build_sections_for_paper({"abstract": "Alpha", "conclusion": "Omega", "full_text": ""})
+
+    assert sections == [
+        {"section_name": "abstract", "content": "Alpha"},
+        {"section_name": "conclusion", "content": "Omega"},
+    ]
+
+
+def test_split_into_chunks_extends_small_tail_when_under_max_words():
+    text = " ".join(f"w{i}" for i in range(7))
+    chunks = _split_into_chunks(text, target_words=5, max_words=10, overlap_words=0)
+
+    assert chunks == ["w0 w1 w2 w3 w4", "w5 w6"]
+
+
+def test_chunk_papers_outer_exception_rolls_back_and_raises():
+    cursor = MagicMock()
+    cursor.execute.side_effect = RuntimeError("statement timeout setup failed")
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    with patch("workers.chunking_worker.connect_to_snowflake", return_value=conn):
+        with pytest.raises(RuntimeError, match="statement timeout setup failed"):
+            chunk_papers(limit=1)
+
+    conn.rollback.assert_called_once()

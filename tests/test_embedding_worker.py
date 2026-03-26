@@ -289,3 +289,33 @@ def test_run_chunk_embedding_batch_empty_text_chunks():
 
     assert result["status"] == "ok"
     assert result["chunks_embedded"] == 0
+
+
+def test_run_chunk_embedding_batch_with_one_chunk():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("CHUNK_ID",), ("PAPER_ID",), ("SECTION_ID",), ("CHUNK_TEXT",), ("EMBEDDING",)],
+        [(1, 10, 5, "chunk text")],
+        [("CHUNK_ID",), ("EMBEDDING",)],
+    ]
+    mock_cursor.description = [("chunk_id",), ("paper_id",), ("section_id",), ("chunk_text",)]
+    mock_cursor.execute.return_value = None
+    mock_cursor.executemany.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    mock_vec = MagicMock()
+    mock_vec.tolist.return_value = [0.2] * 384
+    mock_model = MagicMock()
+    mock_model.encode.return_value = [mock_vec]
+    mock_st = MagicMock()
+    mock_st.SentenceTransformer.return_value = mock_model
+
+    with patch("workers.embedding_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("importlib.import_module", return_value=mock_st):
+            result = run_chunk_embedding_batch(limit=1)
+
+    assert result["status"] == "ok"
+    assert result["chunks_embedded"] == 1

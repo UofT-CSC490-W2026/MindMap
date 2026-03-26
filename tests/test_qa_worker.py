@@ -166,9 +166,6 @@ def test_answer_paper_question_with_chunks():
 # ---------------------------------------------------------------------------
 
 def test_load_history_with_json_cited_chunks():
-    # Lines 76-81: cited_chunk_ids as JSON string gets parsed
-    # Test the JSON parsing logic directly by calling the inner loop logic
-    import json as _json
     from workers.qa_worker import _load_history
 
     mock_cursor = MagicMock()
@@ -182,8 +179,25 @@ def test_load_history_with_json_cited_chunks():
     with patch("workers.qa_worker._qa_logs_table", return_value="MOCK_TABLE"):
         history = _load_history(mock_cursor, session_id="s1", paper_id=1, schema="SILVER")
 
-    assert history[0]["cited_chunk_ids"] == [1, 2, 3]
-    assert history[1]["cited_chunk_ids"] == []
+    assert history[0]["role"] == "assistant"
+    assert history[0]["cited_chunk_ids"] == []
+    assert history[1]["role"] == "user"
+    assert history[1]["cited_chunk_ids"] == [1, 2, 3]
+
+
+def test_load_history_with_invalid_json_cited_chunks():
+    from workers.qa_worker import _load_history
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        ("user", "Hello", None, "not-json"),
+    ]
+    mock_cursor.execute.return_value = None
+
+    with patch("workers.qa_worker._qa_logs_table", return_value="MOCK_TABLE"):
+        history = _load_history(mock_cursor, session_id="s1", paper_id=1, schema="SILVER")
+
+    assert history[0]["cited_chunk_ids"] == []
 
 
 def test_looks_ambiguous_empty_string():
@@ -219,6 +233,41 @@ def test_answer_paper_question_with_history_rewrite():
                     result = answer_paper_question(paper_id=1, question="what does it do")
 
     assert result["status"] == "ok"
+
+
+def test_answer_paper_question_rewrite_failure_falls_back_to_original_question():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        ("user", "What is the method?", None, None),
+    ]
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    mock_grounded_answer = MagicMock()
+    mock_grounded_answer.answer = "The method is X."
+    mock_grounded_answer.cited_chunk_ids = [1, 999]
+
+    mock_llm_instance = MagicMock()
+    mock_llm_instance.rewrite_followup_question.side_effect = RuntimeError("rewrite failed")
+    mock_llm_instance.answer_grounded_question.return_value = {"result": mock_grounded_answer}
+
+    with patch("workers.qa_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch(
+            "workers.qa_worker.retrieve_similar_chunks_local",
+            return_value=[
+                {"chunk_id": 1, "chunk_text": "Method text.", "chunk_type": "methods", "paper_id": 1, "section_id": 1, "score": 0.9}
+            ],
+        ):
+            with patch("workers.qa_worker.LLMClient", return_value=mock_llm_instance):
+                with patch("workers.qa_worker.qualify_table", return_value="DB.SILVER.APP_QA_LOGS"):
+                    result = answer_paper_question(paper_id=1, question="what does it do")
+
+    assert result["status"] == "ok"
+    assert result["rewritten_query"] is None
+    assert result["cited_chunk_ids"] == [1]
 
 
 def test_answer_paper_question_exception_path():

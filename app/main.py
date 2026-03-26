@@ -29,7 +29,7 @@ from workers.ingestion import ingest_from_arxiv, ingest_from_openalex, ingest_fr
 from workers.transformation import main as transform_main, backfill_missing_ss_ids
 from workers.embedding_worker import run_embedding_batch, backfill_similar_ids, run_chunk_embedding_batch
 from workers.chunking_worker import chunk_papers
-from workers.graph_worker import build_knowledge_graph
+from workers.graph_worker import build_knowledge_graph, run_topic_clustering
 import time
 from workers.summary_worker import batch_summarize_papers
 
@@ -167,10 +167,20 @@ def pipeline(
     t0 = time.time()
     if not skip_graph:
         print("Step 7: Building knowledge graph...")
+        # This worker should now trigger the 'supports/contradicts' classifier
+        # for all edges with high similarity scores
         build_knowledge_graph.remote(database=database)
+
+        print("Step 7b: Detecting research gaps and clusters...")
+        # Cluster nodes and label the 'fields'
+        run_topic_clustering.remote(database=database)
     else:
         print("Step 7: Skipped (knowledge graph already complete)")
+
+
     step_times[step] = time.time() - t0
+    
+
     
     step = "Step 8: Summarization"
     t0 = time.time()

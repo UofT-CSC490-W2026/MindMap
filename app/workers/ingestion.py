@@ -309,6 +309,7 @@ def ingest_from_semantic_scholar(
             external_ids = paper.get("externalIds") or {}
             arxiv_id = _extract_arxiv_id(external_ids)
             if not arxiv_id:
+                print(f"Skipping paper without arXiv ID: {paper.get('title')}")
                 # Skip if no arXiv id (required for downstream processing)
                 skipped_no_arxiv += 1
                 continue

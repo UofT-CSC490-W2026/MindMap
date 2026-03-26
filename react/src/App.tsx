@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import ForceGraph2D from 'react-force-graph-2d'
 import { useGraphData } from './hooks/useGraphData'
 import { useSemanticSearch } from './hooks/sematicSearch'
@@ -26,6 +27,7 @@ function getRelMeta(lm: boolean): Record<string, { label: string; color: string;
 }
 
 export default function App() {
+  const navigate = useNavigate()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(undefined)
   const { data: graphData, loading } = useGraphData()
@@ -154,7 +156,7 @@ export default function App() {
   return (
     <main className="app">
       <header className="topbar glass">
-        <div className="brand">
+        <div className="brand" onClick={() => navigate('/graphs')} style={{ cursor: 'pointer' }}>
           <div className="brandMark" aria-hidden="true">M</div>
           <div className="brandText">
             <div className="brandTitle">Mind<span className="accent">Map</span></div>
@@ -219,6 +221,9 @@ export default function App() {
             style={{ fontSize: 18, padding: '6px 10px' }}
           >
             {lightMode ? '🌙' : '💡'}
+          </button>
+          <button className="ghostBtn" type="button" onClick={() => navigate('/graphs')}>
+            Graphs
           </button>
           <button className="ghostBtn" type="button">Library</button>
           <div className="avatar" aria-hidden="true" />

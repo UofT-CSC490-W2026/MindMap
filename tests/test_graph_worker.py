@@ -6,6 +6,7 @@ sys.modules before the module is imported so the heavy ML deps are never loaded.
 """
 
 import sys
+import pytest
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
@@ -34,6 +35,8 @@ from workers.graph_worker import (  # noqa: E402
     _normalize_json_list,
     _normalize_ids,
     _dedupe_edges,
+    _fetch_papers,
+    _require_columns,
     build_knowledge_graph,
     run_topic_clustering,
 )
@@ -66,6 +69,23 @@ def test_normalize_json_list_already_list():
 def test_normalize_ids_mixed():
     # 1 -> 1, "2" -> 2, None -> skipped, "bad" -> skipped
     assert _normalize_ids([1, "2", None, "bad"]) == [1, 2]
+
+
+def test_require_columns_raises():
+    with pytest.raises(RuntimeError, match="Missing required columns"):
+        _require_columns({"id": '"ID"'}, ["id", "missing"], "SILVER")
+
+
+def test_fetch_papers_with_specific_paper_id():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("ID",), ("CITATION_LIST",), ("SIMILAR_EMBEDDINGS_IDS",), ("CONCLUSION",)],
+        [(1, "[]", "[]", "Conclusion")],
+    ]
+
+    result = _fetch_papers(mock_cursor, paper_id=1)
+
+    assert result == [(1, "[]", "[]", "Conclusion")]
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +191,13 @@ def test_citation_targets_no_ss_ids():
     assert result == []
 
 
+def test_citation_targets_skips_non_dict_items():
+    from workers.graph_worker import _citation_targets
+    mock_cursor = MagicMock()
+    result = _citation_targets(mock_cursor, [None, "bad"])
+    assert result == []
+
+
 # ---------------------------------------------------------------------------
 # _bulk_merge_edges
 # ---------------------------------------------------------------------------
@@ -226,3 +253,150 @@ def test_build_knowledge_graph_with_paper():
                 result = build_knowledge_graph(paper_id=None)
 
     assert result["papers_processed"] == 1
+
+
+def test_build_knowledge_graph_runs_classifier_for_new_semantic_edges():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("SOURCE_PAPER_ID",), ("TARGET_PAPER_ID",), ("RELATIONSHIP_TYPE",), ("STRENGTH",), ("REASON",)],
+        [],
+        [("ID",), ("CITATION_LIST",), ("SIMILAR_EMBEDDINGS_IDS",), ("CONCLUSION",)],
+        [(1, None, "[2]", "Source conclusion")],
+        [("ID",), ("CONCLUSION",)],
+    ]
+    mock_cursor.fetchone.return_value = ("Target conclusion",)
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    classifier = MagicMock()
+    classifier.classify.map.return_value = [("SUPPORT", "Aligned findings")]
+
+    with patch("workers.graph_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("workers.graph_worker.RelationshipClassifier", return_value=classifier):
+            with patch("workers.graph_worker._bulk_merge_edges", return_value=2):
+                result = build_knowledge_graph(paper_id=None)
+
+    assert result["edges_merged"] == 2
+    classifier.classify.map.assert_called_once()
+
+
+def test_run_topic_clustering_success():
+    import types
+
+    mock_silver_cursor = MagicMock()
+    mock_silver_cursor.fetchall.side_effect = [
+        [("ID",), ("TITLE",), ("ABSTRACT",), ("EMBEDDING",)],
+        [
+            (1, "Paper One", "Topic alpha", "[0.1, 0.2]"),
+            (2, "Paper Two", "Topic beta", [0.2, 0.3]),
+        ],
+    ]
+    mock_silver_cursor.execute.return_value = None
+
+    mock_gold_cursor = MagicMock()
+    mock_gold_cursor.fetchall.return_value = [
+        ("PAPER_ID",), ("CLUSTER_ID",), ("CLUSTER_LABEL",), ("CLUSTER_NAME",), ("CLUSTER_DESCRIPTION",),
+    ]
+    mock_gold_cursor.execute.return_value = None
+
+    mock_silver_conn = MagicMock()
+    mock_silver_conn.cursor.return_value = mock_silver_cursor
+    mock_gold_conn = MagicMock()
+    mock_gold_conn.cursor.return_value = mock_gold_cursor
+    mock_gold_conn.commit.return_value = None
+
+    fake_np = types.SimpleNamespace(array=lambda values, dtype=None: values, float32="float32")
+
+    class FakeScores:
+        def __init__(self, values):
+            self.values = values
+
+        def argsort(self):
+            return sorted(range(len(self.values)), key=lambda idx: self.values[idx])
+
+    class FakeRow:
+        def __init__(self, values):
+            self.values = values
+
+        def toarray(self):
+            return [FakeScores(self.values)]
+
+    class FakeMatrix:
+        def __getitem__(self, idx):
+            return FakeRow([0.1 + idx, 0.2 + idx, 0.3 + idx])
+
+    vectorizer_instance = MagicMock()
+    vectorizer_instance.fit_transform.return_value = FakeMatrix()
+    vectorizer_instance.get_feature_names_out.return_value = ["alpha", "beta", "gamma"]
+
+    kmeans_instance = MagicMock()
+    kmeans_instance.fit_predict.return_value = [0, 1]
+
+    llm_instance = MagicMock()
+    llm_instance._call_openai.side_effect = [
+        ('NAME: Cluster A\nDESCRIPTION: Desc A', {}),
+        ('NAME: Cluster B\nDESCRIPTION: Desc B', {}),
+    ]
+
+    with patch.dict(
+        sys.modules,
+        {
+            "numpy": fake_np,
+            "sklearn.cluster": types.SimpleNamespace(KMeans=MagicMock(return_value=kmeans_instance)),
+            "sklearn.feature_extraction.text": types.SimpleNamespace(TfidfVectorizer=MagicMock(return_value=vectorizer_instance)),
+            "services.llm_client": types.SimpleNamespace(LLMClient=MagicMock(return_value=llm_instance)),
+        },
+    ):
+        with patch("workers.graph_worker.connect_to_snowflake", side_effect=[mock_silver_conn, mock_gold_conn]):
+            result = run_topic_clustering(n_clusters=5)
+
+    assert result["status"] == "ok"
+    assert result["papers_clustered"] == 2
+    assert result["n_clusters"] == 2
+
+
+def test_relationship_classifier_methods_via_reloaded_module():
+    import importlib
+    import modal
+    import workers.graph_worker as gw
+
+    old_method = modal.method
+    old_enter = modal.enter
+    modal.method = lambda *args, **kwargs: (lambda fn: fn)
+    modal.enter = lambda *args, **kwargs: (lambda fn: fn)
+
+    try:
+        gw = importlib.reload(gw)
+
+        fake_pipeline = MagicMock(return_value="PIPE")
+        fake_transformers = MagicMock()
+        fake_transformers.pipeline = fake_pipeline
+        fake_torch = MagicMock()
+        fake_torch.float16 = "fp16"
+
+        with patch.dict(sys.modules, {"transformers": fake_transformers, "torch": fake_torch}):
+            classifier = gw.RelationshipClassifier()
+            classifier.load_model()
+
+        assert classifier.pipe == "PIPE"
+
+        classifier.pipe = MagicMock(
+            return_value=[
+                {
+                    "generated_text": [
+                        {"content": "ignored"},
+                        {"content": "LABEL: SUPPORT\nREASON: They agree."},
+                    ]
+                }
+            ]
+        )
+
+        assert classifier.classify(("", "target")) == ("NEUTRAL", "")
+        assert classifier.classify(("source", "target")) == ("SUPPORT", "They agree.")
+    finally:
+        modal.method = old_method
+        modal.enter = old_enter
+        importlib.reload(gw)

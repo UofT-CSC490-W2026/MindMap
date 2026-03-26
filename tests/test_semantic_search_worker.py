@@ -63,6 +63,10 @@ def test_parse_cached_ids_respects_k():
     assert _parse_cached_ids('[1, 2, 3, 4, 5]', 3) == [1, 2, 3]
 
 
+def test_parse_cached_ids_skips_invalid_items():
+    assert _parse_cached_ids([1, "x", None, "2"], 10) == [1, 2]
+
+
 # ---------------------------------------------------------------------------
 # _keyword_tokens
 # ---------------------------------------------------------------------------
@@ -200,3 +204,109 @@ def test_retrieve_similar_chunks_local_empty_query():
     from workers.semantic_search_worker import retrieve_similar_chunks_local
     result = retrieve_similar_chunks_local(query_text="", top_k=3)
     assert result == []
+
+
+def test_retrieve_similar_chunks_with_results():
+    from workers.semantic_search_worker import retrieve_similar_chunks
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        (1, 10, 5, "Chunk body", "methods", 0.82),
+    ]
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    mock_vec = MagicMock()
+    mock_vec.tolist.return_value = [0.1] * 384
+    mock_model = MagicMock()
+    mock_model.encode.return_value = [mock_vec]
+    mock_st_local = MagicMock()
+    mock_st_local.SentenceTransformer.return_value = mock_model
+
+    def fake_import(name):
+        import importlib as _il
+        if name == "sentence_transformers":
+            return mock_st_local
+        return _il.import_module(name)
+
+    with patch("workers.semantic_search_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("importlib.import_module", side_effect=fake_import):
+            result = retrieve_similar_chunks(query_text="transformers", top_k=1, paper_id=10)
+
+    assert result[0]["chunk_id"] == 1
+    assert result[0]["section_name"] == "methods"
+
+
+def test_retrieve_similar_chunks_local_respects_context_limit_and_fallback_token_estimate():
+    from workers.semantic_search_worker import retrieve_similar_chunks_local
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        (1, 10, 5, "alpha beta", "abstract", None, 0.9),
+        (2, 10, 6, "x" * 50, "results", 7, 0.8),
+    ]
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    mock_vec = MagicMock()
+    mock_vec.tolist.return_value = [0.1] * 384
+    mock_model = MagicMock()
+    mock_model.encode.return_value = [mock_vec]
+    mock_st_local = MagicMock()
+    mock_st_local.SentenceTransformer.return_value = mock_model
+
+    def fake_import(name):
+        import importlib as _il
+        if name == "sentence_transformers":
+            return mock_st_local
+        return _il.import_module(name)
+
+    with patch("workers.semantic_search_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("importlib.import_module", side_effect=fake_import):
+            result = retrieve_similar_chunks_local(
+                query_text="transformers",
+                top_k=2,
+                paper_id=10,
+                max_context_chars=20,
+            )
+
+    assert len(result) == 1
+    assert result[0]["token_estimate"] >= 1
+
+
+def test_retrieve_similar_chunks_local_skips_blank_and_breaks_at_top_k():
+    from workers.semantic_search_worker import retrieve_similar_chunks_local
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        (1, 10, 5, "   ", "abstract", 1, 0.9),
+        (2, 10, 6, "first", "body", 2, 0.8),
+        (3, 10, 7, "second", "body", 3, 0.7),
+    ]
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    mock_vec = MagicMock()
+    mock_vec.tolist.return_value = [0.1] * 384
+    mock_model = MagicMock()
+    mock_model.encode.return_value = [mock_vec]
+    mock_st_local = MagicMock()
+    mock_st_local.SentenceTransformer.return_value = mock_model
+
+    def fake_import(name):
+        import importlib as _il
+        if name == "sentence_transformers":
+            return mock_st_local
+        return _il.import_module(name)
+
+    with patch("workers.semantic_search_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("importlib.import_module", side_effect=fake_import):
+            result = retrieve_similar_chunks_local(query_text="transformers", top_k=1, paper_id=10, max_context_chars=100)
+
+    assert [row["chunk_id"] for row in result] == [2]

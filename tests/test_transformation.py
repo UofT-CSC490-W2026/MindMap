@@ -6,6 +6,7 @@ so the heavy dep is never loaded.
 """
 
 import sys
+import pytest
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
@@ -407,9 +408,8 @@ def test_get_references_api_path():
     from workers.transformation import get_references
     mock_fetch = MagicMock()
     mock_fetch.remote.return_value = [{"title": "Paper", "arxiv_id": "2301.00001"}]
-    workers.transformation.fetch_connections_ss = mock_fetch
-
-    result = get_references("2301.00001")
+    with patch.object(workers.transformation, "fetch_connections_ss", mock_fetch):
+        result = get_references("2301.00001")
     assert result["source"] == "api"
     assert len(result["data"]) == 1
 
@@ -422,10 +422,9 @@ def test_get_references_fallback_pdf():
     mock_pdf = MagicMock()
     mock_pdf.remote.return_value = ["[1] Some reference text here"]
 
-    workers.transformation.fetch_connections_ss = mock_fetch
-    workers.transformation.extract_references_pdf = mock_pdf
-
-    result = get_references("2301.00001")
+    with patch.object(workers.transformation, "fetch_connections_ss", mock_fetch):
+        with patch.object(workers.transformation, "extract_references_pdf", mock_pdf):
+            result = get_references("2301.00001")
     assert result["source"] == "pdf_parsed_list"
 
 
@@ -532,3 +531,492 @@ def test_ss_post_json_success():
     with patch.dict(sys.modules, {"httpx": mock_httpx}):
         result = _ss_post_json("https://example.com", payload={"ids": ["ARXIV:2301.00001"]})
     assert result == [{"paperId": "abc"}]
+
+
+def test_retry_delay_from_response_invalid_retry_after_header():
+    response = MagicMock()
+    response.headers = {"Retry-After": "bad-value"}
+    delay = _retry_delay_from_response(response, attempt=1, base=1.0, cap=5.0)
+    assert 0.0 <= delay <= 5.0
+
+
+def test_ss_get_json_retries_transient_error_then_succeeds():
+    from workers.transformation import _ss_get_json
+
+    first = MagicMock(status_code=500)
+    first.raise_for_status.side_effect = Exception("should not be raised")
+    second = MagicMock(status_code=200)
+    second.raise_for_status.return_value = None
+    second.json.return_value = {"ok": True}
+    mock_httpx = MagicMock()
+    mock_httpx.get.side_effect = [first, second]
+    mock_httpx.HTTPStatusError = Exception
+
+    with patch.dict(sys.modules, {"httpx": mock_httpx}):
+        with patch("workers.transformation.time.sleep"):
+            result = _ss_get_json("https://example.com", params={})
+
+    assert result == {"ok": True}
+
+
+def test_ss_post_json_retries_transient_error_then_succeeds():
+    from workers.transformation import _ss_post_json
+
+    first = MagicMock(status_code=429)
+    first.raise_for_status.side_effect = Exception("should not be raised")
+    second = MagicMock(status_code=200)
+    second.raise_for_status.return_value = None
+    second.json.return_value = [{"paperId": "abc"}]
+    mock_httpx = MagicMock()
+    mock_httpx.post.side_effect = [first, second]
+    mock_httpx.HTTPStatusError = Exception
+
+    with patch.dict(sys.modules, {"httpx": mock_httpx}):
+        with patch("workers.transformation.time.sleep"):
+            result = _ss_post_json("https://example.com", payload={"ids": ["ARXIV:1"]})
+
+    assert result == [{"paperId": "abc"}]
+
+
+def test_arxiv_get_pdf_bytes_retries_http_error_then_succeeds():
+    from workers.transformation import _arxiv_get_pdf_bytes
+
+    class FakeHTTPError(Exception):
+        pass
+
+    success = MagicMock(status_code=200, content=b"pdf-bytes", text="")
+    success.raise_for_status.return_value = None
+    mock_httpx = MagicMock()
+    mock_httpx.get.side_effect = [FakeHTTPError("boom"), success]
+    mock_httpx.HTTPError = FakeHTTPError
+    mock_httpx.HTTPStatusError = Exception
+
+    with patch.dict(sys.modules, {"httpx": mock_httpx}):
+        with patch("workers.transformation.time.sleep"):
+            result = _arxiv_get_pdf_bytes("2301.00001", max_attempts=2)
+
+    assert result == b"pdf-bytes"
+
+
+def test_fetch_ss_batch_rows_resilient_non_list_response_returns_nones():
+    from workers.transformation import _fetch_ss_batch_rows_resilient
+
+    with patch("workers.transformation._ss_post_json", return_value={"unexpected": True}):
+        result = _fetch_ss_batch_rows_resilient("https://example.com", ["a", "b"], params={})
+
+    assert result == [None, None]
+
+
+def test_fetch_ss_batch_rows_resilient_recurses_on_batch_failure():
+    from workers.transformation import _fetch_ss_batch_rows_resilient
+
+    calls = []
+
+    def fake_post(url, payload, params, timeout):
+        calls.append(tuple(payload["ids"]))
+        if len(payload["ids"]) > 1:
+            raise RuntimeError("batch failed")
+        return [{"paperId": payload["ids"][0]}]
+
+    with patch("workers.transformation._ss_post_json", side_effect=fake_post):
+        result = _fetch_ss_batch_rows_resilient("https://example.com", ["a", "b"], params={})
+
+    assert result == [{"paperId": "a"}, {"paperId": "b"}]
+    assert calls[0] == ("a", "b")
+
+
+def test_resolve_bronze_payload_column_raises_when_missing():
+    from workers.transformation import _resolve_bronze_payload_column
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [("OTHER_COL",)]
+
+    with pytest.raises(RuntimeError, match="Could not find raw payload column"):
+        _resolve_bronze_payload_column(mock_cursor)
+
+
+def test_fetch_connections_ss_citations_mode():
+    from workers.transformation import fetch_connections_ss
+
+    with patch(
+        "workers.transformation._ss_get_json",
+        return_value={
+            "data": [
+                {"citingPaper": {"title": "T", "year": 2024, "paperId": "ss1", "externalIds": {"DOI": "10.1"}}},
+                None,
+            ]
+        },
+    ):
+        result = fetch_connections_ss("2301.00001", mode=1)
+
+    assert result == [{"title": "T", "year": 2024, "arxiv_id": None, "doi": "10.1", "ss_paper_id": "ss1"}]
+
+
+def test_get_references_returns_none_source_when_api_and_pdf_empty():
+    from workers.transformation import get_references
+
+    with patch("workers.transformation.fetch_connections_ss", MagicMock(remote=MagicMock(return_value=None))):
+        with patch("workers.transformation.extract_references_pdf", MagicMock(remote=MagicMock(return_value=None))):
+            result = get_references("2301.00001")
+
+    assert result == {"source": "none", "data": []}
+
+
+def test_main_returns_when_no_ids_to_process():
+    from workers.transformation import main
+
+    with patch("workers.transformation.get_bronze_worklist", MagicMock(remote=MagicMock(return_value=[]))):
+        assert main(parallel=1) is None
+
+
+def test_backfill_missing_ss_ids_with_updates():
+    from workers.transformation import backfill_missing_ss_ids
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("ID",), ("ARXIV_ID",), ("SS_ID",)],
+        [(1, "2301.00001"), (2, "2301.00002")],
+    ]
+    mock_cursor.execute.return_value = None
+    mock_cursor.executemany.return_value = None
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    with patch("workers.transformation.connect_to_snowflake", return_value=mock_conn):
+        with patch(
+            "workers.transformation._ss_post_json",
+            return_value=[{"paperId": "ss1"}, {"paperId": "ss2"}],
+        ):
+            result = backfill_missing_ss_ids(limit=10, batch_size=2)
+
+    assert result["updated"] == 2
+    mock_cursor.executemany.assert_called_once()
+
+
+def test_backfill_conclusions_from_tldr_with_updates_and_overwrite():
+    from workers.transformation import backfill_conclusions_from_tldr
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("ID",), ("ARXIV_ID",), ("TLDR",), ("SS_ID",)],
+        [(1, "2301.00001"), (2, "2301.00002")],
+    ]
+    mock_cursor.execute.return_value = None
+    mock_cursor.executemany.return_value = None
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    with patch("workers.transformation.connect_to_snowflake", return_value=mock_conn):
+        with patch(
+            "workers.transformation._fetch_ss_batch_tldr",
+            return_value={
+                "2301.00001": {"tldr": "Summary A", "ss_id": "ss1"},
+                "2301.00002": {"tldr": "Summary B", "ss_id": "ss2"},
+            },
+        ):
+            result = backfill_conclusions_from_tldr(limit=10, batch_size=2, overwrite_existing=True)
+
+    assert result["updated"] == 2
+    assert result["ss_id_updated"] == 2
+
+
+def test_ss_get_json_401_then_success_without_key():
+    from workers.transformation import _ss_get_json
+
+    unauthorized = MagicMock(status_code=401)
+    unauthorized.raise_for_status.return_value = None
+    success = MagicMock(status_code=200)
+    success.raise_for_status.return_value = None
+    success.json.return_value = {"ok": True}
+    mock_httpx = MagicMock()
+    mock_httpx.get.side_effect = [unauthorized, success]
+    mock_httpx.HTTPStatusError = Exception
+
+    with patch.dict(sys.modules, {"httpx": mock_httpx}):
+        result = _ss_get_json("https://example.com", params={})
+
+    assert result == {"ok": True}
+
+
+def test_ss_post_json_401_then_success_without_key():
+    from workers.transformation import _ss_post_json
+
+    unauthorized = MagicMock(status_code=403)
+    unauthorized.raise_for_status.return_value = None
+    success = MagicMock(status_code=200)
+    success.raise_for_status.return_value = None
+    success.json.return_value = {"ok": True}
+    mock_httpx = MagicMock()
+    mock_httpx.post.side_effect = [unauthorized, success]
+    mock_httpx.HTTPStatusError = Exception
+
+    with patch.dict(sys.modules, {"httpx": mock_httpx}):
+        result = _ss_post_json("https://example.com", payload={})
+
+    assert result == {"ok": True}
+
+
+def test_arxiv_get_pdf_bytes_raises_after_http_error():
+    from workers.transformation import _arxiv_get_pdf_bytes
+
+    class FakeHTTPError(Exception):
+        pass
+
+    mock_httpx = MagicMock()
+    mock_httpx.get.side_effect = FakeHTTPError("boom")
+    mock_httpx.HTTPError = FakeHTTPError
+    mock_httpx.HTTPStatusError = Exception
+
+    with patch.dict(sys.modules, {"httpx": mock_httpx}):
+        with patch("workers.transformation.time.sleep"):
+            with pytest.raises(RuntimeError, match="request failed"):
+                _arxiv_get_pdf_bytes("2301.00001", max_attempts=1)
+
+
+def test_arxiv_get_pdf_bytes_raises_after_http_status_error():
+    from workers.transformation import _arxiv_get_pdf_bytes
+
+    response = MagicMock(status_code=404, text="missing")
+    response.raise_for_status.side_effect = Exception("status")
+    mock_httpx = MagicMock()
+    mock_httpx.get.return_value = response
+    mock_httpx.HTTPError = Exception
+    mock_httpx.HTTPStatusError = Exception
+
+    with patch.dict(sys.modules, {"httpx": mock_httpx}):
+        with patch("workers.transformation.time.sleep"):
+            with pytest.raises(RuntimeError, match="download failed"):
+                _arxiv_get_pdf_bytes("2301.00001", max_attempts=1)
+
+
+def test_extract_connections_skips_non_dict_items():
+    from workers.transformation import _extract_connections
+
+    result = _extract_connections([None, "bad", {"citedPaper": {"title": "T"}}], relation_key="citedPaper", limit=5)
+
+    assert len(result) == 1
+
+
+def test_fetch_ss_batch_metadata_skips_non_dict_rows_and_non_dict_tldr():
+    from workers.transformation import _fetch_ss_batch_metadata
+
+    with patch(
+        "workers.transformation._fetch_ss_batch_rows_resilient",
+        return_value=[None, {"paperId": "ss2", "tldr": "plain", "references": [], "citations": []}],
+    ):
+        result = _fetch_ss_batch_metadata(["a1", "a2"], batch_size=2)
+
+    assert "a1" not in result
+    assert result["a2"]["tldr"] is None
+
+
+def test_fetch_ss_batch_tldr_skips_non_dict_rows_and_non_dict_tldr():
+    from workers.transformation import _fetch_ss_batch_tldr
+
+    with patch(
+        "workers.transformation._fetch_ss_batch_rows_resilient",
+        return_value=[None, {"paperId": "ss2", "tldr": "plain"}],
+    ):
+        result = _fetch_ss_batch_tldr(["a1", "a2"], batch_size=2)
+
+    assert "a1" not in result
+    assert result["a2"]["tldr"] is None
+
+
+def test_require_columns_raises():
+    from workers.transformation import _require_columns
+
+    with pytest.raises(RuntimeError, match="Missing required columns"):
+        _require_columns({"id": '"ID"'}, ["id", "missing"], "TABLE")
+
+
+def test_clean_extracted_text_empty():
+    assert _clean_extracted_text("") == ""
+
+
+def test_extract_conclusion_from_text_empty():
+    assert _extract_conclusion_from_text("") == ""
+
+
+def test_extract_conclusion_stops_at_bibliography():
+    text = "\nConclusion\n" + ("Useful finding " * 10) + "\nBibliography\nignored"
+    result = _extract_conclusion_from_text(text)
+    assert "Bibliography" not in result
+
+
+def test_extract_full_text_pdf_parse_failed():
+    mock_pymupdf = MagicMock()
+    mock_pymupdf.open.side_effect = RuntimeError("bad pdf")
+
+    with patch("workers.transformation._arxiv_get_pdf_bytes", return_value=b"pdf"):
+        with patch.dict(sys.modules, {"pymupdf": mock_pymupdf}):
+            result = extract_full_text_pdf("2301.00001")
+
+    assert result["source"] == "parse_failed"
+
+
+def test_extract_full_text_pdf_empty_pdf_and_skips_blank_pages():
+    blank_page = MagicMock()
+    blank_page.get_text.return_value = "   "
+    mock_doc = MagicMock()
+    mock_doc.__len__.return_value = 1
+    mock_doc.__getitem__.return_value = blank_page
+
+    mock_pymupdf = MagicMock()
+    mock_pymupdf.open.return_value = mock_doc
+
+    with patch("workers.transformation._arxiv_get_pdf_bytes", return_value=b"pdf"):
+        with patch.dict(sys.modules, {"pymupdf": mock_pymupdf}):
+            result = extract_full_text_pdf("2301.00001")
+
+    assert result["source"] == "empty_pdf"
+    assert result["pages_processed"] == 1
+
+
+def test_extract_full_text_pdf_truncates_when_page_exceeds_limit():
+    long_text = "word " * 80000
+    page = MagicMock()
+    page.get_text.return_value = long_text
+    mock_doc = MagicMock()
+    mock_doc.__len__.return_value = 1
+    mock_doc.__getitem__.return_value = page
+
+    mock_pymupdf = MagicMock()
+    mock_pymupdf.open.return_value = mock_doc
+
+    with patch("workers.transformation._arxiv_get_pdf_bytes", return_value=b"pdf"):
+        with patch.dict(sys.modules, {"pymupdf": mock_pymupdf}):
+            result = extract_full_text_pdf("2301.00001")
+
+    assert result["truncated"] is True
+    assert result["source"] == "pdf"
+
+
+def test_extract_conclusion_handles_exception():
+    from workers.transformation import extract_conclusion
+
+    with patch("workers.transformation.extract_full_text_pdf", MagicMock(local=MagicMock(side_effect=RuntimeError("boom")))):
+        result = extract_conclusion("2301.00001")
+
+    assert result == ""
+
+
+def test_fetch_connections_ss_skips_none_ids_and_missing_paper():
+    from workers.transformation import fetch_connections_ss
+
+    with patch(
+        "workers.transformation._ss_get_json",
+        return_value={"data": [{"citedPaper": None}, {"citedPaper": {"externalIds": None}}]},
+    ):
+        result = fetch_connections_ss("2301.00001", mode=0)
+
+    assert result == []
+
+
+def test_extract_references_pdf_parse_error_returns_empty_list():
+    from workers.transformation import extract_references_pdf
+
+    mock_doc_ctx = MagicMock()
+    mock_doc_ctx.__enter__.side_effect = RuntimeError("parse boom")
+    mock_fitz = MagicMock()
+    mock_fitz.open.return_value = mock_doc_ctx
+
+    with patch("workers.transformation._arxiv_get_pdf_bytes", return_value=b"pdf"):
+        with patch.dict(sys.modules, {"fitz": mock_fitz}):
+            result = extract_references_pdf("2301.00001")
+
+    assert result == []
+
+
+def test_transform_to_silver_prefetched_without_tldr_uses_conclusion_fallback():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("RAW_PAYLOAD",)],
+        [("ARXIV_ID",), ("SS_ID",), ("CONCLUSION",), ("FULL_TEXT",), ("FULL_TEXT_SOURCE",), ("FULL_TEXT_EXTRACTED_AT",), ("TLDR",), ("REFERENCE_LIST",), ("CITATION_LIST",), ("TITLE",), ("ABSTRACT",)],
+    ]
+    mock_cursor.execute.return_value = None
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    with patch("workers.transformation.extract_full_text_pdf", MagicMock(local=MagicMock(return_value={"full_text": "\nConclusion\nUseful text", "source": "pdf"}))):
+        with patch("workers.transformation.extract_conclusion", MagicMock(local=MagicMock(return_value="fallback conclusion"))):
+            with patch("workers.transformation.connect_to_snowflake", return_value=mock_conn):
+                transform_to_silver("2301.00001", ss_prefetched={"references": [], "citations": [], "ss_id": "ss1", "tldr": ""})
+
+    args = mock_cursor.execute.call_args[0][1]
+    assert args[5] == "fallback conclusion"
+
+
+def test_transform_to_silver_database_error_rolls_back():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("RAW_PAYLOAD",)],
+        [("ARXIV_ID",), ("SS_ID",), ("CONCLUSION",), ("FULL_TEXT",), ("FULL_TEXT_SOURCE",), ("FULL_TEXT_EXTRACTED_AT",), ("TLDR",), ("REFERENCE_LIST",), ("CITATION_LIST",), ("TITLE",), ("ABSTRACT",)],
+    ]
+    mock_cursor.execute.side_effect = [None, None, RuntimeError("db merge failed")]
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    with patch("workers.transformation.extract_full_text_pdf", MagicMock(local=MagicMock(return_value={"full_text": "", "source": "unavailable"}))):
+        with patch("workers.transformation.extract_conclusion", MagicMock(local=MagicMock(return_value="fallback"))):
+            with patch("workers.transformation.connect_to_snowflake", return_value=mock_conn):
+                transform_to_silver("2301.00001", ss_prefetched={"references": [], "citations": [], "ss_id": "ss1", "tldr": ""})
+
+    mock_conn.rollback.assert_called_once()
+
+
+def test_transform_to_silver_outer_exception_is_swallowed():
+    with patch("workers.transformation.extract_full_text_pdf", MagicMock(local=MagicMock(side_effect=RuntimeError("boom")))):
+        assert transform_to_silver("2301.00001") is None
+
+
+def test_main_parallel_prefetch_and_sequential_error_continue():
+    from workers.transformation import main
+
+    with patch("workers.transformation.get_bronze_worklist", MagicMock(remote=MagicMock(return_value=["a1", "a2"]))):
+        with patch("workers.transformation._fetch_ss_batch_metadata", return_value={"a1": {"ss_id": "x"}}):
+            remote = MagicMock(side_effect=[RuntimeError("bad"), None])
+            with patch("workers.transformation.transform_to_silver", MagicMock(remote=remote)):
+                assert main(parallel=0) is None
+
+
+def test_backfill_missing_ss_ids_batch_failure_and_invalid_rows():
+    from workers.transformation import backfill_missing_ss_ids
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("ID",), ("ARXIV_ID",), ("SS_ID",)],
+        [(1, "2301.00001"), (2, "2301.00002")],
+    ]
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    with patch("workers.transformation.connect_to_snowflake", return_value=mock_conn):
+        with patch("workers.transformation._ss_post_json", side_effect=RuntimeError("batch failed")):
+            result = backfill_missing_ss_ids(limit=10, batch_size=2)
+
+    assert result["resolved"] == 0
+    assert result["updated"] == 0
+
+
+def test_backfill_conclusions_from_tldr_updates_only_ss_id_when_tldr_missing():
+    from workers.transformation import backfill_conclusions_from_tldr
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("ID",), ("ARXIV_ID",), ("TLDR",), ("SS_ID",)],
+        [(1, "2301.00001")],
+    ]
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    with patch("workers.transformation.connect_to_snowflake", return_value=mock_conn):
+        with patch("workers.transformation._fetch_ss_batch_tldr", return_value={"2301.00001": {"tldr": "", "ss_id": "ss1"}}):
+            result = backfill_conclusions_from_tldr(limit=10, batch_size=1, overwrite_existing=False)
+
+    assert result["updated"] == 0
+    assert result["ss_id_updated"] == 1

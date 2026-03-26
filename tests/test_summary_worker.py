@@ -5,6 +5,7 @@ LLMClient is mocked in sys.modules before the module is imported.
 summary_schema is imported naturally since it exists and has no heavy deps.
 """
 
+import importlib
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -355,3 +356,19 @@ def test_batch_summarize_papers_remote_exception_is_recorded():
 
     assert result["papers_failed"] == 1
     assert "worker boom" in result["errors"][0]
+
+
+def test_summary_worker_adds_app_root_to_sys_path_on_reload():
+    import workers.summary_worker as module
+
+    app_root = str(module.APP_ROOT)
+    original_path = list(sys.path)
+    if app_root in sys.path:
+        sys.path.remove(app_root)
+
+    try:
+        reloaded = importlib.reload(module)
+        assert app_root in sys.path
+    finally:
+        sys.path[:] = original_path
+        importlib.reload(module)

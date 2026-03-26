@@ -283,6 +283,67 @@ def test_build_knowledge_graph_runs_classifier_for_new_semantic_edges():
     classifier.classify.map.assert_called_once()
 
 
+def test_build_knowledge_graph_adds_citation_edges():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("SOURCE_PAPER_ID",), ("TARGET_PAPER_ID",), ("RELATIONSHIP_TYPE",)],
+        [],
+        [("ID",), ("CITATION_LIST",), ("SIMILAR_EMBEDDINGS_IDS",), ("CONCLUSION",)],
+        [(1, '[{"ss_paper_id": "ss-2"}]', "[]", "Source conclusion")],
+        [("ID",), ("SS_ID",)],
+        [(2,)],
+        [("ID",), ("CONCLUSION",)],
+    ]
+    mock_cursor.fetchone.return_value = None
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    captured = {}
+
+    def fake_merge(cur, edges, database="DB"):
+        captured["edges"] = edges
+        return len(edges)
+
+    with patch("workers.graph_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("workers.graph_worker.RelationshipClassifier", return_value=MagicMock()):
+            with patch("workers.graph_worker._bulk_merge_edges", side_effect=fake_merge):
+                result = build_knowledge_graph(paper_id=None)
+
+    assert result["edges_merged"] == 1
+    assert captured["edges"][0][:3] == (1, 2, "CITES")
+
+
+def test_build_knowledge_graph_skips_classifier_for_existing_semantic_edge():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("SOURCE_PAPER_ID",), ("TARGET_PAPER_ID",), ("RELATIONSHIP_TYPE",)],
+        [(1, 2, "SUPPORT")],
+        [("ID",), ("CITATION_LIST",), ("SIMILAR_EMBEDDINGS_IDS",), ("CONCLUSION",)],
+        [(1, None, "[2]", "Source conclusion")],
+        [("ID",), ("CONCLUSION",)],
+    ]
+    mock_cursor.fetchone.return_value = ("Target conclusion",)
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    classifier = MagicMock()
+    classifier.classify.map.return_value = [("SUPPORT", "Aligned findings")]
+
+    with patch("workers.graph_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("workers.graph_worker.RelationshipClassifier", return_value=classifier):
+            with patch("workers.graph_worker._bulk_merge_edges", return_value=1):
+                result = build_knowledge_graph(paper_id=None)
+
+    assert result["edges_merged"] == 1
+    classifier.classify.map.assert_not_called()
+
+
 def test_run_topic_clustering_success():
     import types
 
@@ -396,6 +457,19 @@ def test_relationship_classifier_methods_via_reloaded_module():
 
         assert classifier.classify(("", "target")) == ("NEUTRAL", "")
         assert classifier.classify(("source", "target")) == ("SUPPORT", "They agree.")
+
+        classifier.pipe = MagicMock(
+            return_value=[
+                {
+                    "generated_text": [
+                        {"content": "ignored"},
+                        {"content": "LABEL: CONTRADICT\nREASON: They conflict."},
+                    ]
+                }
+            ]
+        )
+
+        assert classifier.classify(("source", "target")) == ("CONTRADICT", "They conflict.")
     finally:
         modal.method = old_method
         modal.enter = old_enter

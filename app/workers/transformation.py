@@ -77,10 +77,6 @@ def _ss_get_json(url: str, params: dict | None = None, timeout: float = 20.0):
                 f"Response body: {body}"
             ) from None
 
-    status = response.status_code if response is not None else "unknown"
-    raise RuntimeError(f"Semantic Scholar GET failed after retries (status={status}) for url={url}")
-
-
 def _ss_post_json(url: str, payload: dict, params: dict | None = None, timeout: float = 30.0):
     import httpx
 
@@ -127,10 +123,6 @@ def _ss_post_json(url: str, payload: dict, params: dict | None = None, timeout: 
                 f"Semantic Scholar POST failed (status={status}) for url={url}. "
                 f"Response body: {body}"
             ) from None
-
-    status = response.status_code if response is not None else "unknown"
-    raise RuntimeError(f"Semantic Scholar POST failed after retries (status={status}) for url={url}")
-
 
 def _arxiv_get_pdf_bytes(arxiv_id: str, timeout: float = 45.0, max_attempts: int = 5) -> bytes:
     import httpx

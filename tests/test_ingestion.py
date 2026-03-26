@@ -446,3 +446,21 @@ def test_main_entrypoint_openalex():
         main(query="test", max_results=1, source="openalex")
 
     mock_openalex.assert_called_once()
+
+
+def test_peek_bronze_handles_json_error():
+    from workers.ingestion import peek_bronze
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("RAW_PAYLOAD",)],
+        [("not-json",)],
+    ]
+    mock_cursor.execute.return_value = None
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    with patch("workers.ingestion.connect_to_snowflake", return_value=mock_conn):
+        peek_bronze(limit=1)
+
+    mock_cursor.close.assert_called_once()

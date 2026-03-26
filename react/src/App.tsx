@@ -5,6 +5,7 @@ import { useGraphData } from './hooks/useGraphData'
 import { useSemanticSearch } from './hooks/sematicSearch'
 import type { GraphNode, GraphLink } from './types/graph'
 import { clusterColor, CLUSTER_COLORS } from './utils/graphUtils'
+import PaperPanel from './components/PaperPanel'
 
 // Right sidebar width — used to offset centerAt so nodes land in the visual center of the graph area
 const SIDEBAR_OFFSET_X = -90
@@ -38,7 +39,8 @@ export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('papers')
   const [selectedClusterId, setSelectedClusterId] = useState<number | null>(null)
   const [highlightRelType, setHighlightRelType] = useState<string | null>(null)
-  const [lightMode, setLightMode] = useState(true)
+  const [lightMode, setLightMode] = useState(false)
+  const [panelPaper, setPanelPaper] = useState<GraphNode | null>(null)
 
   // Apply theme to document root
   useEffect(() => {
@@ -364,6 +366,7 @@ export default function App() {
                 setHighlightRelType(null)
                 fgRef.current?.centerAt((n.x ?? 0) - SIDEBAR_OFFSET_X, n.y ?? 0, 600)
                 fgRef.current?.zoom(3.2, 600)
+                setPanelPaper(n)
               }}
               onLinkClick={(l) => {
                 const link = l as GraphLink
@@ -639,6 +642,14 @@ export default function App() {
           )}
         </aside>
       </section>
+
+      {panelPaper && (
+        <PaperPanel
+          paper={panelPaper}
+          lightMode={lightMode}
+          onClose={() => setPanelPaper(null)}
+        />
+      )}
     </main>
   )
 }

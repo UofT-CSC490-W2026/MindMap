@@ -158,3 +158,52 @@ def graph(
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Graph construction failed: {exc}") from exc
+
+
+# ── Paper Chat ────────────────────────────────────────────────────────────────
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class PaperChatRequest(BaseModel):
+    paper_title: str
+    summary: Dict[str, str]
+    messages: List[ChatMessage]
+
+
+@api.post("/api/paper-chat")
+def paper_chat(req: PaperChatRequest) -> Dict[str, str]:
+    """Chat with GPT-4o about a paper using its summary as context."""
+    try:
+        from openai import OpenAI  # type: ignore
+
+        client = OpenAI()  # reads OPENAI_API_KEY from env
+
+        summary_text = "\n".join(
+            f"{k.replace('_', ' ').title()}: {v}" for k, v in req.summary.items()
+        )
+        system_prompt = (
+            f"You are a research assistant helping a user understand the paper titled "
+            f'"{req.paper_title}". '
+            "Answer questions based on the following structured summary. "
+            "Be concise and accurate. If the summary doesn't cover the question, say so.\n\n"
+            f"--- PAPER SUMMARY ---\n{summary_text}\n--- END SUMMARY ---"
+        )
+
+        openai_messages = [{"role": "system", "content": system_prompt}]
+        for m in req.messages:
+            openai_messages.append({"role": m.role, "content": m.content})
+
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=openai_messages,  # type: ignore[arg-type]
+            max_tokens=512,
+            temperature=0.4,
+        )
+        reply = response.choices[0].message.content or ""
+        return {"reply": reply}
+
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Chat failed: {exc}") from exc

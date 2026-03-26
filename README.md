@@ -1,5 +1,7 @@
 # MindMap
 
+![Coverage](./coverage.svg)
+
 MindMap is an AI-assisted system for exploring academic literature through semantic retrieval and interactive visualization. Instead of returning a flat list of search results, MindMap helps users understand how papers relate, discover relevant work, and navigate research areas more effectively.
 
 ## Table of Contents

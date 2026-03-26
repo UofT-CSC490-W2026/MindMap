@@ -176,7 +176,7 @@ def ingest_from_openalex(query: str, max_results: int = 25, database: str = DATA
             }
 
             print(f"Ingested paper: {raw_data['title']} ({raw_data['publication_date']}), Authors: {raw_data['authors']}")
-            print(f"ids: {raw_data['ids']}")
+            print(f"ids: {raw_data['external_ids']}")
 
             cur.execute(
                 f'INSERT INTO {bronze_table} ("raw_payload") SELECT PARSE_JSON(%s)',

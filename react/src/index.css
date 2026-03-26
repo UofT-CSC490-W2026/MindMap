@@ -486,9 +486,6 @@ input {
   --research-stroke: rgba(0, 112, 243, 0.15);
   --panel-bg: rgba(255, 255, 255, 0.85);
 }
-  background: #e8edf2;
-  color: #1a202c;
-}
 
 [data-theme="light"] .searchInput {
   background: #f7fafc;

@@ -123,3 +123,80 @@ def test_get_related_papers_with_cached_ids():
 
     assert isinstance(result, list)
     assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# semantic_search — with results
+# ---------------------------------------------------------------------------
+
+def test_semantic_search_with_results():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        (1, "2301.00001", "Paper Title", "Abstract text", 0.85),
+    ]
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    mock_vec = MagicMock()
+    mock_vec.tolist.return_value = [0.1] * 384
+    mock_model = MagicMock()
+    mock_model.encode.return_value = [mock_vec]
+    mock_st_local = MagicMock()
+    mock_st_local.SentenceTransformer.return_value = mock_model
+
+    def fake_import(name):
+        import importlib as _il
+        if name == "sentence_transformers":
+            return mock_st_local
+        return _il.import_module(name)
+
+    with patch("workers.semantic_search_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("importlib.import_module", side_effect=fake_import):
+            result = semantic_search(query="transformers", k=5)
+
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert result[0]["id"] == 1
+
+
+# ---------------------------------------------------------------------------
+# get_related_papers — force_refresh path (no cache)
+# ---------------------------------------------------------------------------
+
+def test_get_related_papers_force_refresh():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        (101, "2301.00001", "Paper One", "Abstract", 0.9),
+    ]
+    mock_cursor.execute.return_value = None
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    with patch("workers.semantic_search_worker.connect_to_snowflake", return_value=mock_conn):
+        result = get_related_papers(paper_id=1, k=5, force_refresh=True)
+
+    assert isinstance(result, list)
+    assert result[0]["source"] == "fallback"
+
+
+# ---------------------------------------------------------------------------
+# retrieve_similar_chunks — empty query
+# ---------------------------------------------------------------------------
+
+def test_retrieve_similar_chunks_empty_query():
+    from workers.semantic_search_worker import retrieve_similar_chunks
+    result = retrieve_similar_chunks(query_text="", top_k=5)
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# retrieve_similar_chunks_local — empty query returns early
+# ---------------------------------------------------------------------------
+
+def test_retrieve_similar_chunks_local_empty_query():
+    from workers.semantic_search_worker import retrieve_similar_chunks_local
+    result = retrieve_similar_chunks_local(query_text="", top_k=3)
+    assert result == []

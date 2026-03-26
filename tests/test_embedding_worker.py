@@ -129,3 +129,90 @@ def test_run_chunk_embedding_batch_no_chunks():
 
     assert result["status"] == "ok"
     assert result.get("chunks_embedded") == 0
+
+
+# ---------------------------------------------------------------------------
+# backfill_similar_ids — no rows
+# ---------------------------------------------------------------------------
+
+def test_backfill_similar_ids_no_rows():
+    from workers.embedding_worker import backfill_similar_ids
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("ID",), ("EMBEDDING",), ("SIMILAR_EMBEDDINGS_IDS",)],  # DESC TABLE
+        [],  # no rows missing cache
+    ]
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    with patch("workers.embedding_worker.connect_to_snowflake", return_value=mock_conn):
+        result = backfill_similar_ids(limit=10)
+
+    assert result["status"] == "ok"
+    assert result["backfilled"] == 0
+
+
+def test_backfill_similar_ids_with_rows():
+    from workers.embedding_worker import backfill_similar_ids
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("ID",), ("EMBEDDING",), ("SIMILAR_EMBEDDINGS_IDS",)],  # DESC TABLE
+        [(1,), (2,)],   # two papers missing cache
+        [("ID",), ("EMBEDDING",)],  # DESC TABLE for _compute_topk (paper 1)
+        [(3,), (4,)],   # top-k results for paper 1
+        [("ID",), ("EMBEDDING",)],  # DESC TABLE for _compute_topk (paper 2)
+        [(5,), (6,)],   # top-k results for paper 2
+    ]
+    mock_cursor.execute.return_value = None
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    with patch("workers.embedding_worker.connect_to_snowflake", return_value=mock_conn):
+        result = backfill_similar_ids(limit=10)
+
+    assert result["status"] == "ok"
+    assert result["backfilled"] == 2
+
+
+def test_run_embedding_batch_with_populate_similar():
+    """Test run_embedding_batch with populate_similar=True to cover neighbor population path."""
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("ID",), ("TITLE",), ("CONCLUSION",), ("ABSTRACT",), ("EMBEDDING",), ("SIMILAR_EMBEDDINGS_IDS",)],
+        [(1, "Test Title", "Test Conclusion", "Test Abstract")],
+        [("ID",), ("EMBEDDING",)],   # DESC TABLE for _update_embeddings
+        [("EMBEDDING",)],            # DESC TABLE for _count_embedded_papers
+        [("ID",), ("EMBEDDING",)],   # DESC TABLE for _compute_topk
+        [(2,), (3,)],                # top-k results
+        [("ID",), ("SIMILAR_EMBEDDINGS_IDS",)],  # DESC TABLE for _write_similar_ids
+    ]
+    mock_cursor.fetchone.return_value = (10,)  # count >= min_corpus_size
+    mock_cursor.description = [("id",), ("title",), ("conclusion",), ("abstract",)]
+    mock_cursor.execute.return_value = None
+    mock_cursor.executemany.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    mock_vec = MagicMock()
+    mock_vec.tolist.return_value = [0.1] * 384
+    mock_model = MagicMock()
+    mock_model.encode.return_value = [mock_vec]
+    mock_st = MagicMock()
+    mock_st.SentenceTransformer.return_value = mock_model
+
+    def fake_import(name):
+        if name == "sentence_transformers":
+            return mock_st
+        return importlib.import_module(name)
+
+    with patch("workers.embedding_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("importlib.import_module", side_effect=fake_import):
+            result = run_embedding_batch(limit=1, populate_similar=True, min_corpus_size_for_neighbors=5)
+
+    assert result["status"] == "ok"
+    assert result["neighbors_populated"] is True

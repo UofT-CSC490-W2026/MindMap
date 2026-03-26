@@ -138,3 +138,91 @@ def test_run_topic_clustering_no_embeddings():
         result = run_topic_clustering(n_clusters=3)
 
     assert result["status"] == "skipped"
+
+
+# ---------------------------------------------------------------------------
+# _citation_targets — with ss_ids
+# ---------------------------------------------------------------------------
+
+def test_citation_targets_with_ss_ids():
+    from workers.graph_worker import _citation_targets
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("ID",), ("SS_ID",)],  # DESC TABLE SILVER_PAPERS
+        [(42,), (43,)],         # matching paper ids
+    ]
+    citations = [{"ss_paper_id": "abc123"}, {"ss_paper_id": "def456"}]
+    result = _citation_targets(mock_cursor, citations)
+    assert result == [42, 43]
+
+
+def test_citation_targets_empty():
+    from workers.graph_worker import _citation_targets
+    mock_cursor = MagicMock()
+    result = _citation_targets(mock_cursor, [])
+    assert result == []
+
+
+def test_citation_targets_no_ss_ids():
+    from workers.graph_worker import _citation_targets
+    mock_cursor = MagicMock()
+    citations = [{"title": "Some paper"}]  # no ss_paper_id
+    result = _citation_targets(mock_cursor, citations)
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _bulk_merge_edges
+# ---------------------------------------------------------------------------
+
+def test_bulk_merge_edges_empty():
+    from workers.graph_worker import _bulk_merge_edges
+    mock_cursor = MagicMock()
+    result = _bulk_merge_edges(mock_cursor, [])
+    assert result == 0
+    mock_cursor.execute.assert_not_called()
+
+
+def test_bulk_merge_edges_with_edges():
+    from workers.graph_worker import _bulk_merge_edges
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        ("SOURCE_PAPER_ID",), ("TARGET_PAPER_ID",), ("RELATIONSHIP_TYPE",), ("STRENGTH",), ("REASON",),
+    ]
+    edges = [(1, 2, "SIMILAR", 0.9, None), (1, 3, "CITES", 1.0, None)]
+    result = _bulk_merge_edges(mock_cursor, edges)
+    assert result == 2
+    mock_cursor.execute.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# build_knowledge_graph — with one paper that has similar_ids
+# ---------------------------------------------------------------------------
+
+def test_build_knowledge_graph_with_paper():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        # DESC TABLE GOLD_PAPER_RELATIONSHIPS
+        [("SOURCE_PAPER_ID",), ("TARGET_PAPER_ID",), ("RELATIONSHIP_TYPE",), ("STRENGTH",), ("REASON",)],
+        [],  # existing edges
+        # DESC TABLE SILVER_PAPERS for _fetch_papers
+        [("ID",), ("CITATION_LIST",), ("SIMILAR_EMBEDDINGS_IDS",), ("CONCLUSION",)],
+        # one paper row: id=1, citations=None, similar_ids=[2,3], conclusion="Some conclusion"
+        [(1, None, "[2, 3]", "Some conclusion")],
+        # DESC TABLE SILVER_PAPERS for sim_cols in loop
+        [("ID",), ("CONCLUSION",)],
+        # fetchone for target paper 2 conclusion
+    ]
+    mock_cursor.fetchone.return_value = None  # no conclusion for target papers
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    with patch("workers.graph_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("workers.graph_worker.RelationshipClassifier", MagicMock()):
+            with patch("workers.graph_worker._bulk_merge_edges", return_value=2) as mock_merge:
+                result = build_knowledge_graph(paper_id=None)
+
+    assert result["papers_processed"] == 1

@@ -101,3 +101,92 @@ def test_run_citation_aware_embedding_batch_no_papers():
 
     assert result["status"] == "ok"
     assert result.get("updated") == 0
+
+
+# ---------------------------------------------------------------------------
+# _ensure_tables, _upsert_ca_embedding, _insert_references helpers
+# ---------------------------------------------------------------------------
+
+def test_ensure_tables_calls_execute():
+    from workers.citation_aware_embedding_worker import _ensure_tables
+    mock_cursor = MagicMock()
+    _ensure_tables(mock_cursor)
+    assert mock_cursor.execute.call_count == 2
+
+
+def test_upsert_ca_embedding_calls_execute():
+    from workers.citation_aware_embedding_worker import _upsert_ca_embedding
+    mock_cursor = MagicMock()
+    _upsert_ca_embedding(mock_cursor, "paper1", "model-v1", 0.8, [0.1] * 384)
+    mock_cursor.execute.assert_called_once()
+
+
+def test_insert_references_inserts_rows():
+    from workers.citation_aware_embedding_worker import _insert_references
+    mock_cursor = MagicMock()
+    refs = [{"ref_text": "Ref 1", "ref_arxiv_id": "2301.00001"}, "plain string ref"]
+    _insert_references(mock_cursor, "paper1", "2301.00001", refs)
+    assert mock_cursor.execute.call_count == 2
+
+
+def test_resolve_ref_paper_ids_empty():
+    from workers.citation_aware_embedding_worker import _resolve_ref_paper_ids
+    mock_cursor = MagicMock()
+    result = _resolve_ref_paper_ids(mock_cursor, [])
+    assert result == []
+
+
+def test_resolve_ref_paper_ids_with_ids():
+    from workers.citation_aware_embedding_worker import _resolve_ref_paper_ids
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [("uuid-1",), ("uuid-2",)]
+    result = _resolve_ref_paper_ids(mock_cursor, ["2301.00001", "2301.00002"])
+    assert result == ["uuid-1", "uuid-2"]
+
+
+def test_fetch_embeddings_empty():
+    from workers.citation_aware_embedding_worker import _fetch_embeddings
+    mock_cursor = MagicMock()
+    result = _fetch_embeddings(mock_cursor, [])
+    assert result == []
+
+
+def test_fetch_embeddings_with_ids():
+    from workers.citation_aware_embedding_worker import _fetch_embeddings
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [([0.1] * 384,)]
+    result = _fetch_embeddings(mock_cursor, ["uuid-1"])
+    assert len(result) == 1
+    assert len(result[0]) == 384
+
+
+# ---------------------------------------------------------------------------
+# run_citation_aware_embedding_batch — with one paper, no refs
+# ---------------------------------------------------------------------------
+
+def test_run_citation_aware_embedding_batch_with_paper_no_refs():
+    """Covers the skipped_no_refs path in run_citation_aware_embedding_batch."""
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [("pid1", "2301.00001", "Title", "Abstract")]
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    mock_vec = MagicMock()
+    mock_vec.tolist.return_value = [0.1] * 384
+    mock_model = MagicMock()
+    mock_model.encode.return_value = [mock_vec]
+    mock_st_local = MagicMock()
+    mock_st_local.SentenceTransformer.return_value = mock_model
+    sys.modules["sentence_transformers"] = mock_st_local
+
+    # get_citations returns no references
+    mock_get_citations.remote.return_value = {"references": []}
+
+    with patch("workers.citation_aware_embedding_worker.connect_to_snowflake", return_value=mock_conn):
+        result = run_citation_aware_embedding_batch(limit=1)
+
+    assert result["status"] == "ok"
+    assert result["updated"] == 1
+    assert result["skipped_no_refs"] == 1

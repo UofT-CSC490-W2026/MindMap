@@ -235,3 +235,32 @@ def test_run_citation_aware_embedding_batch_with_reference_embeddings():
     assert result["updated"] == 1
     assert result["skipped_no_refs"] == 0
     assert result["skipped_no_ref_embs"] == 0
+
+
+def test_run_citation_aware_embedding_batch_with_refs_but_no_ref_embeddings():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("pid1", "2301.00001", "Title", "Abstract")],
+        [("ref-paper",)],
+        [],
+    ]
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    mock_vec = MagicMock()
+    mock_vec.tolist.return_value = [0.1] * 384
+    mock_model = MagicMock()
+    mock_model.encode.return_value = [mock_vec]
+    mock_sentence_transformers.SentenceTransformer.return_value = mock_model
+    mock_get_citations.remote.return_value = {
+        "references": [{"ref_text": "Ref", "ref_arxiv_id": "2301.00002"}]
+    }
+
+    with patch("workers.citation_aware_embedding_worker.connect_to_snowflake", return_value=mock_conn):
+        result = run_citation_aware_embedding_batch(limit=1)
+
+    assert result["updated"] == 1
+    assert result["skipped_no_ref_embs"] == 1

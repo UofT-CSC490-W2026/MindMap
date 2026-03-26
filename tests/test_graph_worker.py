@@ -6,6 +6,7 @@ sys.modules before the module is imported so the heavy ML deps are never loaded.
 """
 
 import sys
+import pytest
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
@@ -34,6 +35,8 @@ from workers.graph_worker import (  # noqa: E402
     _normalize_json_list,
     _normalize_ids,
     _dedupe_edges,
+    _fetch_papers,
+    _require_columns,
     build_knowledge_graph,
     run_topic_clustering,
 )
@@ -66,6 +69,23 @@ def test_normalize_json_list_already_list():
 def test_normalize_ids_mixed():
     # 1 -> 1, "2" -> 2, None -> skipped, "bad" -> skipped
     assert _normalize_ids([1, "2", None, "bad"]) == [1, 2]
+
+
+def test_require_columns_raises():
+    with pytest.raises(RuntimeError, match="Missing required columns"):
+        _require_columns({"id": '"ID"'}, ["id", "missing"], "SILVER")
+
+
+def test_fetch_papers_with_specific_paper_id():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("ID",), ("CITATION_LIST",), ("SIMILAR_EMBEDDINGS_IDS",), ("CONCLUSION",)],
+        [(1, "[]", "[]", "Conclusion")],
+    ]
+
+    result = _fetch_papers(mock_cursor, paper_id=1)
+
+    assert result == [(1, "[]", "[]", "Conclusion")]
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +188,13 @@ def test_citation_targets_no_ss_ids():
     mock_cursor = MagicMock()
     citations = [{"title": "Some paper"}]  # no ss_paper_id
     result = _citation_targets(mock_cursor, citations)
+    assert result == []
+
+
+def test_citation_targets_skips_non_dict_items():
+    from workers.graph_worker import _citation_targets
+    mock_cursor = MagicMock()
+    result = _citation_targets(mock_cursor, [None, "bad"])
     assert result == []
 
 
@@ -329,3 +356,47 @@ def test_run_topic_clustering_success():
     assert result["status"] == "ok"
     assert result["papers_clustered"] == 2
     assert result["n_clusters"] == 2
+
+
+def test_relationship_classifier_methods_via_reloaded_module():
+    import importlib
+    import modal
+    import workers.graph_worker as gw
+
+    old_method = modal.method
+    old_enter = modal.enter
+    modal.method = lambda *args, **kwargs: (lambda fn: fn)
+    modal.enter = lambda *args, **kwargs: (lambda fn: fn)
+
+    try:
+        gw = importlib.reload(gw)
+
+        fake_pipeline = MagicMock(return_value="PIPE")
+        fake_transformers = MagicMock()
+        fake_transformers.pipeline = fake_pipeline
+        fake_torch = MagicMock()
+        fake_torch.float16 = "fp16"
+
+        with patch.dict(sys.modules, {"transformers": fake_transformers, "torch": fake_torch}):
+            classifier = gw.RelationshipClassifier()
+            classifier.load_model()
+
+        assert classifier.pipe == "PIPE"
+
+        classifier.pipe = MagicMock(
+            return_value=[
+                {
+                    "generated_text": [
+                        {"content": "ignored"},
+                        {"content": "LABEL: SUPPORT\nREASON: They agree."},
+                    ]
+                }
+            ]
+        )
+
+        assert classifier.classify(("", "target")) == ("NEUTRAL", "")
+        assert classifier.classify(("source", "target")) == ("SUPPORT", "They agree.")
+    finally:
+        modal.method = old_method
+        modal.enter = old_enter
+        importlib.reload(gw)

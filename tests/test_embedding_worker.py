@@ -319,3 +319,12 @@ def test_run_chunk_embedding_batch_with_one_chunk():
 
     assert result["status"] == "ok"
     assert result["chunks_embedded"] == 1
+
+
+def test_update_chunk_embeddings_empty_rows():
+    from workers.embedding_worker import _update_chunk_embeddings
+
+    mock_cursor = MagicMock()
+    _update_chunk_embeddings(mock_cursor, database="DB", rows=[])
+
+    mock_cursor.executemany.assert_not_called()

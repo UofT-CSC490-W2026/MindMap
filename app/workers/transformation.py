@@ -3,8 +3,9 @@ import threading
 import time
 import os
 from typing import Any, Dict, List, Optional
-from config import app, image, snowflake_secret, semantic_scholar_secret, DATABASE, qualify_table
-from utils import connect_to_snowflake
+
+from app.config import app, image, snowflake_secret, semantic_scholar_secret, DATABASE, qualify_table
+from app.utils import connect_to_snowflake
 
 
 _SS_MIN_INTERVAL_SECONDS = 1.05
@@ -433,98 +434,94 @@ def transform_to_silver(
     database: str = DATABASE,
 ):
     import json
-    
-    try:
-        # 1. Primary conclusion strategy: Semantic Scholar TLDR (more reliable than PDF parsing).
-        conclusion = ""
-        refs_data: List[dict] = []
-        cites_data: List[dict] = []
-        ss_id = None
 
-        if ss_prefetched:
-            conclusion = (ss_prefetched.get("tldr") or "").strip()
-            refs_data = ss_prefetched.get("references", []) or []
-            cites_data = ss_prefetched.get("citations", []) or []
-            ss_id = ss_prefetched.get("ss_id")
-            if not conclusion:
-                # Fallback for older/partial SS records where TLDR is unavailable.
-                conclusion = extract_conclusion.local(arxiv_id)
-        else:
+    # 1. Primary conclusion strategy: Semantic Scholar TLDR (more reliable than PDF parsing).
+    conclusion = ""
+    refs_data: List[dict] = []
+    cites_data: List[dict] = []
+    ss_id = None
+
+    if ss_prefetched:
+        conclusion = (ss_prefetched.get("tldr") or "").strip()
+        refs_data = ss_prefetched.get("references", []) or []
+        cites_data = ss_prefetched.get("citations", []) or []
+        ss_id = ss_prefetched.get("ss_id")
+        if not conclusion:
+            # Fallback for older/partial SS records where TLDR is unavailable.
             conclusion = extract_conclusion.local(arxiv_id)
-            refs_task = get_references.local(arxiv_id)
-            cites_task = fetch_connections_ss.local(arxiv_id, mode=1)
+    else:
+        conclusion = extract_conclusion.local(arxiv_id)
+        refs_task = get_references.local(arxiv_id)
+        cites_task = fetch_connections_ss.local(arxiv_id, mode=1)
 
-            refs_data = refs_task.get("data", []) if refs_task else []
-            cites_data = cites_task if cites_task else []
+        refs_data = refs_task.get("data", []) if refs_task else []
+        cites_data = cites_task if cites_task else []
 
-            # 2. Get the SS_ID for the primary paper
-            # We query SS directly for the seed paper's ID to ensure we have it for the check
-            try:
-                ss_data = _ss_get_json(
-                    url=f"https://api.semanticscholar.org/graph/v1/paper/ARXIV:{arxiv_id}",
-                    params={"fields": "paperId"},
-                    timeout=20.0,
-                )
-                ss_id = ss_data.get("paperId")
-            except Exception:
-                pass
-
-        conn = connect_to_snowflake(database=database, schema="SILVER")
-        cur = conn.cursor()
-
+        # 2. Get the SS_ID for the primary paper
+        # We query SS directly for the seed paper's ID to ensure we have it for the check
         try:
-            # 3. Dual-Key MERGE Logic
-            # This matches if EITHER the arxiv_id OR the ss_paper_id exists.
-            cur.execute("""
-                MERGE INTO {silver_papers} target
-                USING (
-                    SELECT 
-                        %s as "arxiv_id",
-                        %s as "ss_id",
-                        "raw_payload":title::STRING as "title",
-                        "raw_payload":summary::STRING as "abstract",
-                        %s as "conclusion",
-                        PARSE_JSON(%s) as "reference_list",
-                        PARSE_JSON(%s) as "citation_list"
-                    FROM {bronze_papers}
-                    WHERE "raw_payload":entry_id::STRING LIKE %s
-                    LIMIT 1
-                ) source
-                ON target."arxiv_id" = source."arxiv_id" OR (target."ss_id" = source."ss_id" AND source."ss_id" IS NOT NULL)
-                WHEN MATCHED THEN
-                    UPDATE SET 
-                        target."arxiv_id" = COALESCE(target."arxiv_id", source."arxiv_id"),
-                        target."ss_id" = COALESCE(target."ss_id", source."ss_id"),
-                        target."conclusion" = source."conclusion",
-                        target."reference_list" = source."reference_list",
-                        target."citation_list" = source."citation_list"
-                WHEN NOT MATCHED THEN
-                    INSERT ("arxiv_id", "ss_id", "title", "abstract", "conclusion", "reference_list", "citation_list")
-                    VALUES (source."arxiv_id", source."ss_id", source."title", source."abstract", source."conclusion", source."reference_list", source."citation_list");
-            """.format(
-                silver_papers=_silver_papers_table(database=database),
-                bronze_papers=_bronze_papers_table(database=database),
-            ), (
-                arxiv_id,
-                ss_id, 
-                conclusion,
-                json.dumps(refs_data), 
-                json.dumps(cites_data), 
-                f"%{arxiv_id}%",
-            ))
+            ss_data = _ss_get_json(
+                url=f"https://api.semanticscholar.org/graph/v1/paper/ARXIV:{arxiv_id}",
+                params={"fields": "paperId"},
+                timeout=20.0,
+            )
+            ss_id = ss_data.get("paperId")
+        except Exception:
+            pass
 
-            conn.commit()
-            print(f"Processed {arxiv_id} (SS_ID: {ss_id}) into Silver.")
+    conn = connect_to_snowflake(database=database, schema="SILVER")
+    cur = conn.cursor()
 
-        except Exception as e:
-            print(f"Database Error for {arxiv_id}: {e}")
-            conn.rollback()
-        finally:
-            cur.close()
-            conn.close()
-    
+    try:
+        # 3. Dual-Key MERGE Logic
+        # This matches if EITHER the arxiv_id OR the ss_paper_id exists.
+        cur.execute("""
+            MERGE INTO {silver_papers} target
+            USING (
+                SELECT 
+                    %s as arxiv_id,
+                    %s as ss_id,
+                    "raw_payload":title::STRING as title,
+                    "raw_payload":summary::STRING as abstract,
+                    %s as conclusion,
+                    PARSE_JSON(%s) as reference_list,
+                    PARSE_JSON(%s) as citation_list
+                FROM {bronze_papers}
+                WHERE "raw_payload":entry_id::STRING LIKE %s
+                LIMIT 1
+            ) source
+            ON target."arxiv_id" = source.arxiv_id OR (target."ss_id" = source.ss_id AND source.ss_id IS NOT NULL)
+            WHEN MATCHED THEN
+                UPDATE SET 
+                    target."arxiv_id" = COALESCE(target."arxiv_id", source.arxiv_id),
+                    target."ss_id" = COALESCE(target."ss_id", source.ss_id),
+                    target."conclusion" = source.conclusion,
+                    target."reference_list" = source.reference_list,
+                    target."citation_list" = source.citation_list
+            WHEN NOT MATCHED THEN
+                INSERT ("arxiv_id", "ss_id", "title", "abstract", "conclusion", "reference_list", "citation_list")
+                VALUES (source.arxiv_id, source.ss_id, source.title, source.abstract, source.conclusion, source.reference_list, source.citation_list);
+        """.format(
+            silver_papers=_silver_papers_table(database=database),
+            bronze_papers=_bronze_papers_table(database=database),
+        ), (
+            arxiv_id,
+            ss_id, 
+            conclusion,
+            json.dumps(refs_data), 
+            json.dumps(cites_data), 
+            f"%{arxiv_id}%",
+        ))
+
+        conn.commit()
+        print(f"Processed {arxiv_id} (SS_ID: {ss_id}) into Silver.")
+        return {"status": "ok", "arxiv_id": arxiv_id, "ss_id": ss_id}
     except Exception as e:
-        print(f"Error processing {arxiv_id}: {e}")
+        conn.rollback()
+        raise RuntimeError(f"Database Error for {arxiv_id}: {e}") from e
+    finally:
+        cur.close()
+        conn.close()
 
 
 # Provides a list of arxiv_ids in the bronze layer to be processed into silver
@@ -781,3 +778,21 @@ def backfill_conclusions_from_tldr(
     finally:
         cur.close()
         conn.close()
+
+@app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret])
+def process_single_silver(arxiv_id: str, database: str = DATABASE):
+    """
+    Orchestrator for a single paper, mirroring the logic in main().
+    """
+    print(f"Orchestrating Silver transform for: {arxiv_id}")
+    
+    # 1. Mirror the pre-fetch logic from your main()
+    ss_prefetch = _fetch_ss_batch_metadata([arxiv_id], batch_size=1, relation_limit=10)
+    
+    # 2. Execute the transform and bubble up failures to the API layer.
+    result = transform_to_silver.remote(
+        arxiv_id,
+        ss_prefetched=ss_prefetch.get(arxiv_id),
+        database=database,
+    )
+    return result

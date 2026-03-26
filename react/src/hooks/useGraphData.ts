@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { getPapers, getRelationships } from '../services/graphService'
 import { buildGraph } from '../utils/graphUtils'
 import type { GraphNode, GraphLink } from '../types/graph'
@@ -12,18 +12,26 @@ export function useGraphData() {
   const [data, setData] = useState<GraphData>({ nodes: [], links: [] })
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    async function load() {
+  const reload = useCallback(async () => {
+    setLoading(true)
+    try {
       const [papers, relationships] = await Promise.all([
         getPapers(),
         getRelationships(),
       ])
       const graph = buildGraph(papers, relationships)
       setData(graph)
+    } catch (err) {
+      console.error('Failed to load graph data:', err)
+      setData({ nodes: [], links: [] })
+    } finally {
       setLoading(false)
     }
-    load()
   }, [])
 
-  return { data, loading }
+  useEffect(() => {
+    reload()
+  }, [reload])
+
+  return { data, loading, reload }
 }

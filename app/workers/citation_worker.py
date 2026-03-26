@@ -1,5 +1,5 @@
 from typing import Dict, Any
-from config import app, image_citation, snowflake_secret
+from app.config import app, image_citation, snowflake_secret
 
 @app.function(image=image_citation, secrets=[snowflake_secret], timeout=60 * 10)
 def get_citations(arxiv_id: str, max_refs: int = 200) -> Dict[str, Any]:

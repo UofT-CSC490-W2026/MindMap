@@ -3,8 +3,8 @@
 from typing import List, Dict, Any, Tuple, Optional
 import json
 
-from utils import connect_to_snowflake
-from config import app, ml_image, snowflake_secret, DATABASE, qualify_table
+from app.utils import connect_to_snowflake
+from app.config import app, ml_image, snowflake_secret, DATABASE, qualify_table
 
 def _silver_table(database: str = DATABASE) -> str:
     return qualify_table("SILVER_PAPERS", database=database)
@@ -119,6 +119,103 @@ def _build_embedding_text(row: Dict[str, Any]) -> Optional[str]:
     return "\n\n".join(sections)
 
 
+def _fetch_single_paper_by_arxiv_id(cur, database: str, arxiv_id: str) -> Optional[Dict[str, Any]]:
+    silver = _silver_table(database=database)
+    cur.execute(
+        f"""
+        SELECT
+            "id",
+            "title",
+            "conclusion",
+            "abstract",
+            "embedding"
+        FROM {silver}
+        WHERE "arxiv_id" = %s
+        LIMIT 1
+        """,
+        (str(arxiv_id),),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "title": row[1],
+        "conclusion": row[2],
+        "abstract": row[3],
+        "embedding": row[4],
+    }
+
+
+@app.function(image=ml_image, secrets=[snowflake_secret], timeout=60 * 10)
+def process_single_embedding(
+    arxiv_id: str,
+    model_name: str = "sentence-transformers/all-MiniLM-L12-v2",
+    populate_similar: bool = True,
+    k: int = 10,
+    overwrite_existing: bool = False,
+    database: str = DATABASE,
+) -> Dict[str, Any]:
+    """
+    Embed exactly one paper identified by arxiv_id and optionally populate neighbors.
+    """
+    import importlib
+    sentence_transformers = importlib.import_module("sentence_transformers")
+    SentenceTransformer = sentence_transformers.SentenceTransformer
+
+    conn = connect_to_snowflake(database=database, schema="SILVER")
+    cur = conn.cursor()
+    try:
+        row = _fetch_single_paper_by_arxiv_id(cur, database=database, arxiv_id=arxiv_id)
+        if not row:
+            return {"status": "failed", "error": f"arxiv_id not found in SILVER_PAPERS: {arxiv_id}"}
+
+        if row.get("embedding") is not None and not overwrite_existing:
+            return {
+                "status": "skipped",
+                "reason": "embedding already exists",
+                "arxiv_id": arxiv_id,
+                "paper_id": int(row["id"]),
+                "database": database,
+            }
+
+        text = _build_embedding_text(row)
+        if not text:
+            return {
+                "status": "failed",
+                "error": "No usable title/abstract text found for embedding.",
+                "arxiv_id": arxiv_id,
+                "paper_id": int(row["id"]),
+                "database": database,
+            }
+
+        model = SentenceTransformer(model_name)
+        vec = model.encode([text], normalize_embeddings=True)[0].tolist()
+        pid = int(row["id"])
+
+        _update_embeddings(cur, database=database, rows=[(pid, vec)])
+        conn.commit()
+
+        populated_neighbors = False
+        if populate_similar:
+            sim_ids = _compute_topk_in_snowflake(cur, database=database, pid=pid, k=int(k))
+            _write_similar_ids(cur, database=database, pid=pid, sim_ids=sim_ids)
+            conn.commit()
+            populated_neighbors = True
+
+        return {
+            "status": "ok",
+            "arxiv_id": arxiv_id,
+            "paper_id": pid,
+            "model": model_name,
+            "neighbors_populated": populated_neighbors,
+            "database": database,
+        }
+    finally:
+        cur.close()
+        conn.close()
+
+
 @app.function(image=ml_image, secrets=[snowflake_secret], timeout=60 * 20)
 def run_embedding_batch(
     limit: int = 200,
@@ -219,7 +316,7 @@ def backfill_similar_ids(limit: int = 200, k: int = 10, database: str = DATABASE
     try:
         cur.execute(
             f"""
-                SELECT "id"
+                SELECT id
                 FROM {silver}
                 WHERE "embedding" IS NOT NULL
                     AND "similar_embeddings_ids" IS NULL

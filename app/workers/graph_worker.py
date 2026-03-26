@@ -4,8 +4,8 @@ Build Gold layer relationships (citations + similarity) from Silver layer.
 import json
 from typing import Iterable, List, Optional, Tuple
 
-from config import app, image, snowflake_secret, DATABASE, qualify_table
-from utils import connect_to_snowflake
+from app.config import app, image, snowflake_secret, DATABASE, qualify_table
+from app.utils import connect_to_snowflake
 
 
 def _silver_table(database: str = DATABASE) -> str:
@@ -13,7 +13,7 @@ def _silver_table(database: str = DATABASE) -> str:
 
 
 def _gold_table(database: str = DATABASE) -> str:
-    return qualify_table("GOLD_PAPER_RELATIONSHIPS", database=database)
+    return qualify_table("GOLD_CONNECTIONS", database=database)
 
 
 def _fetch_papers(cur, paper_id: Optional[int], database: str = DATABASE) -> List[Tuple[int, object, object]]:
@@ -108,13 +108,13 @@ def _bulk_merge_edges(cur, edges: List[Tuple[int, int, str, float]], database: s
                 column4 AS strength
             FROM VALUES {values_sql}
         ) AS source
-        ON target.source_paper_id = source.source_paper_id
-           AND target.target_paper_id = source.target_paper_id
-           AND target.relationship_type = source.relationship_type
+        ON target."source_paper_id" = source.source_paper_id
+           AND target."target_paper_id" = source.target_paper_id
+           AND target."relationship_type" = source.relationship_type
         WHEN MATCHED THEN
-            UPDATE SET target.strength = source.strength
+            UPDATE SET target."strength" = source.strength
         WHEN NOT MATCHED THEN
-            INSERT (source_paper_id, target_paper_id, relationship_type, strength)
+            INSERT ("source_paper_id", "target_paper_id", "relationship_type", "strength")
             VALUES (source.source_paper_id, source.target_paper_id, source.relationship_type, source.strength)
         """,
         params,

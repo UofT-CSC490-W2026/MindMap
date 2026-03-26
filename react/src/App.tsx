@@ -3,6 +3,8 @@ import ForceGraph2D from 'react-force-graph-2d'
 import { useGraphData } from './hooks/useGraphData'
 import { useSemanticSearch } from './hooks/sematicSearch'
 import type { GraphNode, GraphLink } from './types/graph'
+import AddPaperModal from './components/AddPaperModal'
+import { getPaperStatus, ingestPaper } from './services/paperService'
 
 function asNodeId(v: GraphLink['source'] | GraphLink['target']) {
   return typeof v === 'object' ? (v as GraphNode).id : v
@@ -11,8 +13,8 @@ function asNodeId(v: GraphLink['source'] | GraphLink['target']) {
 export default function App() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(undefined)
-  const { data: graphData, loading } = useGraphData()
-
+  const { data: graphData, loading, reload: reloadGraph } = useGraphData()
+  const [showAddPaper, setShowAddPaper] = useState(false)
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<number | null>(null)
 
@@ -21,6 +23,28 @@ export default function App() {
   const searchWrapRef = useRef<HTMLDivElement>(null)
   const { results: searchResults, loading: searchLoading } = useSemanticSearch(query)
 
+  // Adding ids
+  const [addingId, setAddingId] = useState<string | null>(null)
+  const [addedIds, setAddedIds] = useState<Set<string>>(new Set())
+
+  async function waitForIngestJob(jobId: string, timeoutMs = 120000) {
+    const start = Date.now()
+    while (Date.now() - start < timeoutMs) {
+      let status: { status: 'pending' | 'processing' | 'done' | 'failed'; error?: string } | null = null
+      try {
+        status = await getPaperStatus(jobId)
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+        continue
+      }
+      if (status.status === 'done') return
+      if (status.status === 'failed') {
+        throw new Error(status.error ?? 'Ingestion failed')
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+    }
+    console.warn(`Timed out waiting for ingestion job ${jobId}`)
+  }
   // Close dropdown on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -163,117 +187,129 @@ export default function App() {
               </div>
 
               {searchResults.map((r, i) => (
-                <button
+                <div
                   key={r.paperId}
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    setQuery(r.title)
-                    setDropdownOpen(false)
-                  }}
                   style={{
                     display: 'flex',
-                    alignItems: 'flex-start',
+                    alignItems: 'center',
                     gap: 12,
                     width: '100%',
-                    textAlign: 'left',
                     padding: '12px 16px',
-                    background: 'transparent',
-                    border: 'none',
-                    borderBottom:
-                      i < searchResults.length - 1
-                        ? '1px solid rgba(255,255,255,0.05)'
-                        : 'none',
-                    cursor: 'pointer',
+                    borderBottom: i < searchResults.length - 1
+                      ? '1px solid rgba(255,255,255,0.05)'
+                      : 'none',
                     color: '#ccd6f6',
-                    transition: 'background 0.15s',
+                    boxSizing: 'border-box',
                   }}
-                  onMouseEnter={(e) =>
-                    (e.currentTarget.style.background = 'rgba(100,255,218,0.06)')
-                  }
-                  onMouseLeave={(e) =>
-                    (e.currentTarget.style.background = 'transparent')
-                  }
                 >
                   {/* Index badge */}
                   <span
                     style={{
                       flexShrink: 0,
-                      width: 20,
-                      height: 20,
+                      width: 20, height: 20,
                       borderRadius: '50%',
                       background: 'rgba(100,255,218,0.12)',
                       border: '1px solid rgba(100,255,218,0.25)',
                       color: '#64ffda',
-                      fontSize: 10,
-                      fontWeight: 700,
-                      display: 'grid',
-                      placeItems: 'center',
-                      marginTop: 2,
+                      fontSize: 10, fontWeight: 700,
+                      display: 'grid', placeItems: 'center',
                     }}
                   >
                     {i + 1}
                   </span>
 
-                  <div style={{ minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontWeight: 500,
-                        fontSize: 13,
-                        marginBottom: 4,
-                        lineHeight: 1.4,
-                        color: '#e6f0ff',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
+                  {/* Text — clicking sets query */}
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => { setQuery(r.title); setDropdownOpen(false) }}
+                    style={{
+                      flex: 1, minWidth: 0,
+                      background: 'none', border: 'none',
+                      cursor: 'pointer', textAlign: 'left', padding: 0,
+                    }}
+                  >
+                    <div style={{
+                      fontWeight: 500, fontSize: 13, marginBottom: 4,
+                      lineHeight: 1.4, color: '#e6f0ff',
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>
                       {r.title}
                     </div>
-                    <div
-                      style={{
-                        fontSize: 11,
-                        color: '#8892b0',
-                        display: 'flex',
-                        gap: 8,
-                        flexWrap: 'wrap',
-                      }}
-                    >
+                    <div style={{ fontSize: 11, color: '#8892b0', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       {r.authors.length > 0 && (
                         <span>
-                          {r.authors
-                            .slice(0, 3)
-                            .map((a) => a.name)
-                            .join(', ')}
+                          {r.authors.slice(0, 3).map((a) => a.name).join(', ')}
                           {r.authors.length > 3 ? ' et al.' : ''}
                         </span>
                       )}
-                      {r.year && (
-                        <span style={{ color: 'rgba(100,255,218,0.5)' }}>
-                          {r.year}
-                        </span>
-                      )}
+                      {r.year && <span style={{ color: 'rgba(100,255,218,0.5)' }}>{r.year}</span>}
                       {r.citationCount > 0 && (
                         <span style={{ color: 'rgba(100,255,218,0.5)' }}>
                           {r.citationCount.toLocaleString()} citations
                         </span>
                       )}
                     </div>
-                  </div>
-                </button>
+                  </button>
+
+                  {/* Add button */}
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    disabled={addingId === r.paperId || addedIds.has(r.paperId)}
+                    onClick={async () => {
+                      console.log('externalIds:', JSON.stringify(r.externalIds))
+                      const arxivId = r.externalIds?.ArXiv
+                      if (!arxivId) return
+                      setAddingId(r.paperId)
+                      try {
+                        const { job_id } = await ingestPaper(arxivId)
+                        setAddedIds((prev) => new Set(prev).add(r.paperId))
+                        await waitForIngestJob(job_id)
+                        await reloadGraph()
+                      } catch (e) {
+                        console.error('Add paper failed:', e)
+                      } finally {
+                        setAddingId(null)
+                      }
+                    }}
+                    style={{
+                      flexShrink: 0,
+                      padding: '4px 10px',
+                      borderRadius: 6,
+                      border: '1px solid rgba(100,255,218,0.3)',
+                      background: addedIds.has(r.paperId)
+                        ? 'rgba(100,255,218,0.12)'
+                        : 'transparent',
+                      color: addedIds.has(r.paperId) ? '#64ffda' : 'rgba(100,255,218,0.7)',
+                      fontSize: 11, fontWeight: 600,
+                      cursor: addingId === r.paperId || addedIds.has(r.paperId)
+                        ? 'not-allowed' : 'pointer',
+                      whiteSpace: 'nowrap',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    {addingId === r.paperId ? '…' : addedIds.has(r.paperId) ? '✓ Added' : '+ Add'}
+                  </button>
+                </div>
               ))}
             </div>
           )}
         </div>
 
         <div className="topbarRight">
-          <button className="ghostBtn" type="button">
-            Library
+          <button
+            className="ghostBtn"
+            type="button"
+            onClick={() => setShowAddPaper(true)}
+            style={{ color: '#64ffda', borderColor: 'rgba(100,255,218,0.3)' }}
+          >
+            + Add paper
           </button>
+          <button className="ghostBtn" type="button">Library</button>
           <div className="avatar" aria-hidden="true" />
         </div>
       </header>
-
       <section className="content">
         <aside className="left glass panel">
           <div className="panelHeader">Graph Controls</div>
@@ -489,6 +525,12 @@ export default function App() {
           </div>
         </aside>
       </section>
+        {showAddPaper && (
+        <AddPaperModal
+          onClose={() => setShowAddPaper(false)}
+          onSuccess={() => { /* optionally refetch graph data here */ }}
+        />
+      )}
     </main>
   )
 }

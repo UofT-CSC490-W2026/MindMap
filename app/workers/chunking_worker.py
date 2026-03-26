@@ -141,16 +141,6 @@ def _build_sections_for_paper(paper: Dict[str, Any]) -> List[Dict[str, str]]:
         if key not in seen_pairs:
             sections.append({"section_name": "conclusion", "content": _truncate_words(conclusion, MAX_SECTION_WORDS)})
 
-    if not sections:
-        fallback_parts = []
-        if abstract:
-            fallback_parts.append(f"Abstract\n{abstract}")
-        if conclusion:
-            fallback_parts.append(f"Conclusion\n{conclusion}")
-        fallback_text = "\n\n".join(fallback_parts).strip()
-        if fallback_text:
-            sections.append({"section_name": "body", "content": _truncate_words(fallback_text, MAX_SECTION_WORDS)})
-
     return sections
 
 
@@ -178,14 +168,6 @@ def _split_into_chunks(
     while i < len(words):
         chunk_words = words[i : i + target_words]
         chunk_text = " ".join(chunk_words)
-
-        if len(chunk_words) < target_words and i + target_words < len(words):
-            words_left = len(words) - i
-            if words_left > max_words:
-                pass
-            else:
-                chunk_words = words[i:]
-                chunk_text = " ".join(chunk_words)
 
         if chunk_text.strip():
             chunks.append(chunk_text)

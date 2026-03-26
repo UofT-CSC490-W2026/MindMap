@@ -335,51 +335,63 @@ def _insert_section_and_chunks(
 def chunk_papers(limit: int = 100, database: str = DATABASE) -> Dict[str, Any]:
     """
     Split papers into sections and chunks for RAG retrieval.
-
-    - Reads papers from SILVER_PAPERS that do not yet have chunks
-    - Prefers full-paper text when available
-    - Falls back to abstract + conclusion if full text is unavailable
-    - Splits each section into ~500-word chunks with 40-word overlap
-    - Writes to SILVER_PAPER_SECTIONS and SILVER_PAPER_CHUNKS tables
-    - Idempotent: reruns only process new papers
     """
+    # establish connection to the silver schema where structured paper data lives
     conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
 
     try:
-        # Prevent a single pathological query from hanging the entire run.
+        # safety: stop the query if it takes too long to avoid wasting compute credits
         cur.execute(f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {int(STATEMENT_TIMEOUT_SECONDS)}")
 
+        # idempotency check: only fetch papers that haven't been processed into chunks yet
         papers_to_chunk = _fetch_unchunked_papers(cur, database=database, limit=limit)
         if not papers_to_chunk:
-            return {"status": "ok", "papers_chunked": 0, "note": "No new papers to chunk."}
+            return {"status": "ok", "papers_chunked": 0, "note": "no new papers to chunk."}
 
+        # initialize counters for the final execution report
         total_sections = 0
         total_chunks = 0
         skipped_papers = 0
         skipped_sections = 0
 
+        print(f"chunking {len(papers_to_chunk)} papers from silver into sections and chunks for rag...")
         for idx, paper in enumerate(papers_to_chunk, start=1):
+            print("-" * 40)
+            print(f"processing paper {idx}/{len(papers_to_chunk)} (id={paper['id']})...")
+            print(f"total chunks so far: {total_chunks} | total sections so far: {total_sections} | skipped papers so far: {skipped_papers} | skipped sections so far: {skipped_sections}")
+            
             paper_id = int(paper["id"])
             arxiv_id = paper.get("arxiv_id", "unknown")
+            
+            # transform the paper record into a list of logical sections (intro, methods, etc.)
             sections_to_insert = _build_sections_for_paper(paper)
+            print(f"identified {len(sections_to_insert)} sections for paper {arxiv_id} (id={paper_id})")
+            print(f"section names: {[s['section_name'] for s in sections_to_insert]}")
 
             try:
+                # skip if no text (abstract, conclusion, or full text) was found in the silver record
                 if not sections_to_insert:
                     skipped_papers += 1
-                    logger.warning(f"Skipping paper {arxiv_id} (id={paper_id}) because no usable text was found")
+                    logger.warning(f"skipping paper {arxiv_id} (id={paper_id}) because no usable text was found")
                     continue
 
                 for section_idx, section in enumerate(sections_to_insert):
+                    print(section.keys())
+                    print(f"  processing section {section_idx+1}/{len(sections_to_insert)}: '{section['section_name']}'...")
                     content = section["content"]
                     section_name = section["section_name"]
+                    print(content)
+                    
+                    # guard against massive sections that might degrade embedding quality or hit llm limits
                     if _estimate_word_count(content) > MAX_SECTION_WORDS:
                         skipped_sections += 1
                         logger.warning(
-                            f"Skipping oversized {section_name} section for paper {arxiv_id} (id={paper_id})"
+                            f"skipping oversized {section_name} section for paper {arxiv_id} (id={paper_id})"
                         )
                         continue
 
+                    # create the section header and split its text into overlapping chunks
                     _, added_chunks = _insert_section_and_chunks(
                         cur,
                         database=database,
@@ -391,16 +403,20 @@ def chunk_papers(limit: int = 100, database: str = DATABASE) -> Dict[str, Any]:
                     total_sections += 1
                     total_chunks += added_chunks
 
+                # save progress per paper so we don't lose work if a later paper causes an error
                 conn.commit()
-                logger.info(f"Paper {arxiv_id} (id={paper_id}): chunking complete")
+                logger.info(f"paper {arxiv_id} (id={paper_id}): chunking complete")
+                
             except Exception as paper_err:
+                # fault tolerance: if one paper fails, rollback that paper but continue the batch
                 skipped_papers += 1
                 conn.rollback()
                 logger.warning(
-                    f"Skipping problematic paper {arxiv_id} (id={paper_id}) due to chunking error: {paper_err}"
+                    f"skipping problematic paper {arxiv_id} (id={paper_id}) due to chunking error: {paper_err}"
                 )
                 continue
 
+        # return telemetry for monitoring and debugging pipeline performance
         return {
             "status": "ok",
             "papers_chunked": len(papers_to_chunk) - skipped_papers,
@@ -412,9 +428,10 @@ def chunk_papers(limit: int = 100, database: str = DATABASE) -> Dict[str, Any]:
         }
 
     except Exception as e:
-        logger.error(f"Error in chunk_papers: {e}")
+        logger.error(f"error in chunk_papers: {e}")
         conn.rollback()
         raise
     finally:
+        # cleanup: close the cursor and connection to prevent snowflake session leaks
         cur.close()
         conn.close()

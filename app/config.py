@@ -83,6 +83,14 @@ image_citation_aware = _add_local_files(
     )
 )
 
+# Clustering image (ML + scikit-learn for K-Means topic clustering)
+clustering_image = _add_local_files(
+    base_image.pip_install(
+        "numpy",
+        "scikit-learn",
+    )
+)
+
 # LLM image (with LLM dependencies for summarization)
 llm_image = _add_local_files(
     base_image.pip_install(

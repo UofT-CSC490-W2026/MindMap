@@ -82,3 +82,7 @@ A4/tmp/
 tmp/
 experiments/*
 RAG_IMPLEMENTATION_SUMMARY.md
+app/lib
+*.html
+lib/
+*.png

@@ -91,7 +91,14 @@ modal secret create openai-api \
   OPENAI_API_KEY="$OPENAI_API_KEY" \
   --force
 
-# 4) verify secrets exist
+# 4) (optional) create HuggingFace secret for gated models
+#    required if using models like Llama 3 that need HF authentication
+#    get your token at https://huggingface.co/settings/tokens
+modal secret create huggingface-secret \
+  HF_TOKEN="<your_huggingface_token>" \
+  --force
+
+# 5) verify secrets exist
 modal secret list
 ```
 

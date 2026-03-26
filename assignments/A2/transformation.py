@@ -20,19 +20,24 @@ def connect_to_snowflake():
 
 
 
-# parse PDF to search for conclusion
-@app.function(image=image, secrets=[snowflake_secret], max_containers=1)
-def extract_conclusion(arxiv_id: str):
-    import httpx
-    import pymupdf # PyMuPDF
 
-    # 1. Download
+# Helper to download arXiv PDF once
+def download_arxiv_pdf(arxiv_id: str):
+    import httpx
+    import time
     pdf_url = f"https://export.arxiv.org/pdf/{arxiv_id}.pdf"
     print(f"Downloading: {pdf_url}")
-    response = httpx.get(pdf_url, follow_redirects=True, timeout=30.0)
-    
-    # 2. Open and Extract Text
-    doc = pymupdf.open(stream=response.content, filetype="pdf")
+    time.sleep(3)  # Polite delay to avoid arXiv rate limiting
+    headers = {"User-Agent": "MindMapBot/1.0 (mailto:your-email@example.com)"}
+    response = httpx.get(pdf_url, follow_redirects=True, timeout=30.0, headers=headers)
+    response.raise_for_status()
+    return response.content
+
+# parse PDF to search for conclusion (now takes pdf_bytes)
+def extract_conclusion_from_pdf(pdf_bytes):
+    import pymupdf # PyMuPDF
+    import re
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     full_text = ""
     for page in doc:
         full_text += page.get_text()
@@ -45,7 +50,6 @@ def extract_conclusion(arxiv_id: str):
         r'\n(?:[0-9.]*\s*)?Concluding Remarks',
         r'\n(?:[0-9.]*\s*)?Summary and Discussion'
     ]
-    
     # Sections that typically follow a conclusion
     stop_patterns = [
         r'\n(?:[0-9.]*\s*)?References',
@@ -54,7 +58,6 @@ def extract_conclusion(arxiv_id: str):
         r'\n(?:[0-9.]*\s*)?Acknowledgments',
         r'\n(?:[0-9.]*\s*)?Supplementary Material'
     ]
-
     # Find the start of the conclusion
     start_idx = -1
     for pattern in conclusion_patterns:
@@ -62,28 +65,21 @@ def extract_conclusion(arxiv_id: str):
         if match:
             start_idx = match.start()
             break
-
     if start_idx == -1:
-        return f"Could not find a Conclusion header for {arxiv_id}"
-
+        return None
     # Find the earliest occurrence of any 'stop' section AFTER the conclusion starts
     text_after_start = full_text[start_idx:]
     end_idx = len(text_after_start)
-
     for pattern in stop_patterns:
         match = re.search(pattern, text_after_start, re.IGNORECASE)
-        if match and match.start() > 50: # Ensure it's not matching the header itself
+        if match and match.start() > 50:
             if match.start() < end_idx:
                 end_idx = match.start()
-
     conclusion_raw = text_after_start[:end_idx]
-
     # 4. Clean formatting
-    # Removes LaTeX inline math, fix newlines, and strip double spaces
     clean_text = re.sub(r'\$.*?\$', '', conclusion_raw) 
     clean_text = clean_text.replace('\n', ' ')
     clean_text = " ".join(clean_text.split())
-
     return clean_text
 
 # Use the Semantic Scholar API to extract connections
@@ -151,91 +147,90 @@ def fetch_connections_ss(arxiv_id: str, mode=0):
         print(f"API Error: {e}")
         return None
     
-# Use PDF parsing to extract references
-@app.function(image=image, secrets=[snowflake_secret], max_containers=4)
-def extract_references_pdf(arxiv_id: str):
-    import httpx
-    import fitz 
-    import re
 
-    pdf_url = f"https://export.arxiv.org/pdf/{arxiv_id}.pdf"
-    
+# Use PDF parsing to extract references (now takes pdf_bytes)
+def extract_references_from_pdf(pdf_bytes):
+    import fitz
+    import re
     try:
-        response = httpx.get(pdf_url, follow_redirects=True, timeout=30.0)
-        response.raise_for_status()
-        
-        with fitz.open(stream=response.content, filetype="pdf") as doc:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
             full_text = ""
             # Only look at the very end (last 5 pages)
             start_page = max(0, len(doc) - 5)
             for i in range(start_page, len(doc)):
                 full_text += doc[i].get_text()
-
         # 1. Find the actual start of the list
-        # We look for the first instance of "[1]" that appears after the word "References"
         ref_match = re.search(r'References', full_text, re.IGNORECASE)
         start_search = ref_match.start() if ref_match else 0
-        
         # 2. Extract and clean the text from that point on
         content = full_text[start_search:]
-        # Join lines to fix broken citations
         clean_content = " ".join(content.replace('\n', ' ').split())
-
         # 3. SPLIT INTO THE LIST
-        # This regex looks for [1], [2], etc. and captures them
         parts = re.split(r'(\[\d+\])', clean_content)
-        
         # 4. Reconstruct the list (combine the bracket with its following text)
         citations_list = []
         for i in range(1, len(parts), 2):
             if i + 1 < len(parts):
                 citation_entry = f"{parts[i]} {parts[i+1].strip()}"
-                # Filter out short fragments that are usually page numbers or footers
                 if len(citation_entry) > 15:
                     citations_list.append(citation_entry)
-
         return citations_list
-
     except Exception as e:
         return [f"Error: {str(e)}"]
     
+
 
 # get citations for a given paper with arxiv_id
 # first attempts via the Semantic Scholar, then tries parsing pdf if that fails
 @app.function(image=image, secrets=[snowflake_secret], max_containers=5)
 def get_references(arxiv_id: str):
-
     # 1. Try Semantic Scholar (The "Clean" Way)
     api_results = fetch_connections_ss.remote(arxiv_id, mode=0)
-
     if api_results and len(api_results) > 0:
         return {"source": "api", "data": api_results}
-
-    # 2. Fallback to PDF Parsing
+    # 2. Fallback to PDF Parsing (download once, extract refs)
     print(f"API returned 0 results. Falling back to PDF parsing for {arxiv_id}...")
-
-    # This now returns a LIST of strings
-    citations_list = extract_references_pdf.remote(arxiv_id)
-
-    if citations_list and isinstance(citations_list, list):
-        return {"source": "pdf_parsed_list", "data": citations_list}
-
+    try:
+        pdf_bytes = download_arxiv_pdf(arxiv_id)
+        citations_list = extract_references_from_pdf(pdf_bytes)
+        if citations_list and isinstance(citations_list, list):
+            return {"source": "pdf_parsed_list", "data": citations_list}
+    except Exception as e:
+        print(f"PDF download/extract error: {e}")
     return {"source": "none", "data": []}
      
+
 @app.function(image=image, secrets=[snowflake_secret], max_containers=5)
 def transform_to_silver(arxiv_id: str):
+    """
+    Orchestrates the transformation of a single arXiv paper from the Bronze to Silver layer.
+    Steps:
+    1. Downloads the PDF once and extracts both the conclusion and references.
+    2. Fetches citations from Semantic Scholar.
+    3. Fetches the Semantic Scholar paper ID for dual-key merge.
+    4. Merges/updates the Silver table with all extracted and fetched data.
+    """
     import json
-    
-    # 1. Parallel Extractions
-    conclusion = extract_conclusion.local(arxiv_id)
-    refs_task = get_references.local(arxiv_id)
-    cites_task = fetch_connections_ss.local(arxiv_id, mode=1)
+    # 1. Parallel Extractions (download PDF once, extract both)
+    pdf_bytes = None
+    conclusion = None
+    refs_task = None
+    try:
+        # Download the PDF only once for efficiency and politeness to arXiv
+        pdf_bytes = download_arxiv_pdf(arxiv_id)
+        # Extract the conclusion section from the PDF
+        conclusion = extract_conclusion_from_pdf(pdf_bytes)
+        # Extract the references section from the PDF
+        refs_task = extract_references_from_pdf(pdf_bytes)
+    except Exception as e:
+        print(f"PDF download/extract error: {e}")
 
-    refs_data = refs_task.get("data", []) if refs_task else []
+    # 2. Fetch citations (papers that cite this paper) from Semantic Scholar
+    cites_task = fetch_connections_ss.local(arxiv_id, mode=1)
+    refs_data = refs_task if refs_task else []
     cites_data = cites_task if cites_task else []
 
-    # 2. Get the SS_ID for the primary paper
-    # We query SS directly for the seed paper's ID to ensure we have it for the check
+    # 3. Get the Semantic Scholar paper ID for this arXiv paper (for dual-key merge)
     import httpx
     ss_id = None
     try:
@@ -245,12 +240,10 @@ def transform_to_silver(arxiv_id: str):
     except:
         pass
 
+    # 4. Merge all extracted and fetched data into the Silver table
     conn = connect_to_snowflake()
     cur = conn.cursor()
-
     try:
-        # 3. Dual-Key MERGE Logic
-        # This matches if EITHER the arxiv_id OR the ss_paper_id exists.
         cur.execute("""
             MERGE INTO SILVER_PAPERS target
             USING (
@@ -285,10 +278,8 @@ def transform_to_silver(arxiv_id: str):
             json.dumps(cites_data), 
             f"%{arxiv_id}%",
         ))
-
         conn.commit()
         print(f"Processed {arxiv_id} (SS_ID: {ss_id}) into Silver.")
-
     except Exception as e:
         print(f"Database Error: {e}")
         conn.rollback()

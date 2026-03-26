@@ -157,6 +157,11 @@ resource "snowflake_table" "gold_paper_relationships" {
   }
 
   column {
+    name = "reason"
+    type = "VARCHAR"
+  }
+
+  column {
     name = "created_at"
     type = "TIMESTAMP_NTZ"
     default {
@@ -164,6 +169,66 @@ resource "snowflake_table" "gold_paper_relationships" {
     }
   }
 
+}
+
+resource "snowflake_table" "gold_paper_clusters" {
+  database = snowflake_database.mindmap.name
+  schema   = snowflake_schema.gold.name
+  name     = "GOLD_PAPER_CLUSTERS"
+
+  column {
+    name = "paper_id"
+    type = "NUMBER"
+  }
+
+  column {
+    name = "cluster_id"
+    type = "NUMBER"
+  }
+
+  column {
+    name = "cluster_label"
+    type = "VARCHAR"
+  }
+
+  column {
+    name = "cluster_name"
+    type = "VARCHAR"
+  }
+
+  column {
+    name = "cluster_description"
+    type = "VARCHAR"
+  }
+
+  column {
+    name = "created_at"
+    type = "TIMESTAMP_NTZ"
+    default {
+      expression = "CURRENT_TIMESTAMP()"
+    }
+  }
+}
+
+resource "snowflake_table_constraint" "pk_gold_paper_clusters" {
+  name     = "pk_gold_paper_clusters"
+  type     = "PRIMARY KEY"
+  table_id = snowflake_table.gold_paper_clusters.fully_qualified_name
+  columns  = ["paper_id"]
+}
+
+resource "snowflake_table_constraint" "fk_gold_clusters_paper" {
+  name     = "fk_gold_clusters_paper"
+  type     = "FOREIGN KEY"
+  table_id = snowflake_table.gold_paper_clusters.fully_qualified_name
+  columns  = ["paper_id"]
+
+  foreign_key_properties {
+    references {
+      table_id = snowflake_table.silver_papers.fully_qualified_name
+      columns  = ["id"]
+    }
+  }
 }
 
 resource "snowflake_table" "gold_paper_summaries" {

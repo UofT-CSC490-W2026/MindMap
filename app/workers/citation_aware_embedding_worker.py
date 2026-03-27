@@ -2,8 +2,8 @@ from typing import List, Dict, Any, Tuple
 import math
 import re
 
-from config import app, DATABASE, image_citation_aware, snowflake_secret
-from utils import connect_to_snowflake
+from app.config import app, DATABASE, image_citation_aware, snowflake_secret
+from app.utils import connect_to_snowflake
 from .citation_worker import get_citations  # your Modal function
 # NOTE: importing Modal functions across files is okay if both are in the same app name
 

@@ -1,4 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
+const API_BASES = [
+  import.meta.env.VITE_SEARCH_API_URL,
+  import.meta.env.VITE_API_URL,
+  'https://benmarlow--mindmap-api-fastapi-app.modal.run',
+  'https://benmarlow--mindmap-pipeline-fastapi-app.modal.run',
+].filter(Boolean) as string[]
 
 export interface SearchResult {
   paperId: string
@@ -6,6 +12,7 @@ export interface SearchResult {
   authors: { name: string }[]
   year: number | null
   citationCount: number
+  externalIds?: { ArXiv?: string }
 }
 
 export function useSemanticSearch(query: string) {
@@ -31,17 +38,16 @@ export function useSemanticSearch(query: string) {
       try {
         const params = new URLSearchParams({
           query: q,
-          limit: '3',                          // top 3 results
-          fields: 'title,authors,year,citationCount',
+          limit: '10',                         // top 10 results
+          fields: 'title,authors,year,citationCount,externalIds',
         })
-
-        const res = await fetch(
-          `https://api.semanticscholar.org/graph/v1/paper/search?${params}`,
-          { signal: controller.signal }
+        const res = await fetchWithFallback(
+          API_BASES.map((base) => `${base}/papers/search?${params}`),
+          controller.signal,
         )
 
         const json = await res.json()
-        setResults(json.data ?? [])
+        setResults((json.data ?? []).filter((p: SearchResult) => !!p.externalIds?.ArXiv))
       } catch (err) {
         if ((err as Error).name !== 'AbortError') setResults([])
       } finally {
@@ -56,4 +62,22 @@ export function useSemanticSearch(query: string) {
   }, [query])
 
   return { results, loading }
+}
+
+async function fetchWithFallback(urls: string[], signal: AbortSignal): Promise<Response> {
+  let lastError: unknown = null
+
+  for (const url of urls) {
+    try {
+      const timeoutSignal = AbortSignal.timeout(8000)
+      const combined = AbortSignal.any([signal, timeoutSignal])
+      const res = await fetch(url, { signal: combined })
+      if (res.ok) return res
+      lastError = new Error(`Search failed on ${url}: ${res.status}`)
+    } catch (err) {
+      lastError = err
+    }
+  }
+
+  throw lastError ?? new Error('Search failed on all configured API URLs.')
 }

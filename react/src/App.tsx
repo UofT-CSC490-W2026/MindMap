@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import ForceGraph2D from 'react-force-graph-2d'
 import { useGraphData } from './hooks/useGraphData'
 import { useSemanticSearch } from './hooks/sematicSearch'
+import { rebuildClusters } from './services/graphService'
 import type { GraphNode, GraphLink } from './types/graph'
+import { getPaperStatus, ingestPaper } from './services/paperService'
 import { clusterColor, CLUSTER_COLORS } from './utils/graphUtils'
 import PaperPanel from './components/PaperPanel'
 
@@ -31,8 +33,12 @@ export default function App() {
   const navigate = useNavigate()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(undefined)
-  const { data: graphData, loading } = useGraphData()
-
+  const progressTimerRef = useRef<number | null>(null)
+  const hideProgressTimerRef = useRef<number | null>(null)
+  const rebuildStartedAtRef = useRef<number | null>(null)
+  const { data: graphData, loading, reload: reloadGraph } = useGraphData()
+  const optimisticIdRef = useRef(-1)
+  const [optimisticNodes, setOptimisticNodes] = useState<GraphNode[]>([])
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [selectedLink, setSelectedLink] = useState<GraphLink | null>(null)
@@ -53,7 +59,92 @@ export default function App() {
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const searchWrapRef = useRef<HTMLDivElement>(null)
   const { results: searchResults, loading: searchLoading } = useSemanticSearch(query)
+  const [activeRebuildJobs, setActiveRebuildJobs] = useState(0)
+  const [rebuildProgress, setRebuildProgress] = useState(0)
+  const rebuildingGraph = activeRebuildJobs > 0
 
+  // Adding ids
+  const [addingId, setAddingId] = useState<string | null>(null)
+  const [addedIds, setAddedIds] = useState<Set<string>>(new Set())
+  const [clustering, setClustering] = useState(false)
+  const effectiveGraphData = useMemo(
+    () => ({
+      nodes: [...graphData.nodes, ...optimisticNodes],
+      links: graphData.links,
+    }),
+    [graphData.links, graphData.nodes, optimisticNodes],
+  )
+
+  async function waitForIngestJob(jobId: string, timeoutMs = 120000) {
+    const start = Date.now()
+    while (Date.now() - start < timeoutMs) {
+      let status: { status: 'pending' | 'processing' | 'done' | 'failed'; error?: string } | null = null
+      try {
+        status = await getPaperStatus(jobId)
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+        continue
+      }
+      if (status.status === 'done') return
+      if (status.status === 'failed') {
+        throw new Error(status.error ?? 'Ingestion failed')
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+    }
+    console.warn(`Timed out waiting for ingestion job ${jobId}`)
+  }
+
+  useEffect(() => {
+    if (rebuildingGraph) {
+      if (rebuildStartedAtRef.current == null) {
+        rebuildStartedAtRef.current = Date.now()
+      }
+      if (hideProgressTimerRef.current != null) {
+        window.clearTimeout(hideProgressTimerRef.current)
+        hideProgressTimerRef.current = null
+      }
+      if (progressTimerRef.current == null) {
+        progressTimerRef.current = window.setInterval(() => {
+          const startedAt = rebuildStartedAtRef.current ?? Date.now()
+          const elapsedSec = (Date.now() - startedAt) / 1000
+          setRebuildProgress((prev) => {
+            // Move quickly at first, then slower, but keep moving during long model phases.
+            if (elapsedSec < 10) return Math.min(45, prev + 4)
+            if (elapsedSec < 30) return Math.min(70, prev + 1.8)
+            if (elapsedSec < 90) return Math.min(88, prev + 0.7)
+            if (elapsedSec < 180) return Math.min(95, prev + 0.35)
+            return Math.min(98, prev + 0.15)
+          })
+        }, 600)
+      }
+      setRebuildProgress((prev) => (prev < 8 ? 8 : prev))
+      return
+    }
+
+    if (progressTimerRef.current != null) {
+      window.clearInterval(progressTimerRef.current)
+      progressTimerRef.current = null
+    }
+    if (rebuildProgress > 0) {
+      rebuildStartedAtRef.current = null
+      setRebuildProgress(100)
+      hideProgressTimerRef.current = window.setTimeout(() => {
+        setRebuildProgress(0)
+        hideProgressTimerRef.current = null
+      }, 700)
+    }
+
+    return () => {
+      if (progressTimerRef.current != null) {
+        window.clearInterval(progressTimerRef.current)
+        progressTimerRef.current = null
+      }
+      if (hideProgressTimerRef.current != null) {
+        window.clearTimeout(hideProgressTimerRef.current)
+        hideProgressTimerRef.current = null
+      }
+    }
+  }, [rebuildProgress, rebuildingGraph])
   // Close dropdown on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -67,27 +158,27 @@ export default function App() {
 
   const idToNode = useMemo(() => {
     const map = new Map<number, GraphNode>()
-    for (const n of graphData.nodes) map.set(n.id, n)
+    for (const n of effectiveGraphData.nodes) map.set(n.id, n)
     return map
-  }, [graphData.nodes])
+  }, [effectiveGraphData.nodes])
 
   const neighborIds = useMemo(() => {
     const s = new Set<number>()
     if (selectedId == null) return s
     s.add(selectedId)
-    for (const l of graphData.links) {
+    for (const l of effectiveGraphData.links) {
       const a = asNodeId(l.source)
       const b = asNodeId(l.target)
       if (a === selectedId) s.add(b)
       if (b === selectedId) s.add(a)
     }
     return s
-  }, [selectedId, graphData.links])
+  }, [selectedId, effectiveGraphData.links])
 
   // Derive unique clusters from nodes
   const clusters = useMemo(() => {
     const seen = new Map<number, { id: number; name: string; description: string; count: number }>()
-    for (const n of graphData.nodes) {
+    for (const n of effectiveGraphData.nodes) {
       if (n.clusterId == null) continue
       if (!seen.has(n.clusterId)) {
         seen.set(n.clusterId, {
@@ -100,25 +191,21 @@ export default function App() {
       seen.get(n.clusterId)!.count++
     }
     return Array.from(seen.values()).sort((a, b) => a.id - b.id)
-  }, [graphData.nodes])
+  }, [effectiveGraphData.nodes])
 
   // Filter links by view mode
   const visibleGraphData = useMemo(() => {
     if (viewMode === 'semantic') {
       return {
-        nodes: graphData.nodes,
-        links: graphData.links.filter(l =>
-          ['SUPPORT', 'CONTRADICT', 'NEUTRAL', 'CITES'].includes(l.relationship_type)
-        ),
+        nodes: effectiveGraphData.nodes,
+        links: effectiveGraphData.links.filter(l => l.relationship_type === 'SIMILAR'),
       }
     }
     return {
-      nodes: graphData.nodes,
-      links: graphData.links.filter(l =>
-        ['CITES', 'SIMILAR'].includes(l.relationship_type)
-      ),
+      nodes: effectiveGraphData.nodes,
+      links: effectiveGraphData.links.filter(l => l.relationship_type === 'CITES'),
     }
-  }, [graphData, viewMode])
+  }, [effectiveGraphData, viewMode])
 
   // Nodes/links involved in the highlighted relationship type
   const highlightedLinks = useMemo(() => {
@@ -137,7 +224,7 @@ export default function App() {
     })
     return ids
   }, [highlightedLinks])
-  const filteredPaperNodes = useMemo(() => graphData.nodes, [graphData.nodes])
+  const filteredPaperNodes = useMemo(() => effectiveGraphData.nodes, [effectiveGraphData.nodes])
 
   const selectedPaper = selectedId != null ? idToNode.get(selectedId) : undefined
   const selectedLinkNodes = useMemo(() => {
@@ -146,6 +233,25 @@ export default function App() {
     const tgt = idToNode.get(asNodeId(selectedLink.target))
     return { src, tgt }
   }, [selectedLink, idToNode])
+  const selectedLinkReason = useMemo(() => {
+    if (!selectedLink) return null
+    if (selectedLink.reason) return selectedLink.reason
+    if (selectedLink.relationship_type !== 'SIMILAR') return null
+
+    const srcId = asNodeId(selectedLink.source)
+    const tgtId = asNodeId(selectedLink.target)
+    const semanticEdge = effectiveGraphData.links.find((l) => {
+      const ls = asNodeId(l.source)
+      const lt = asNodeId(l.target)
+      return (
+        ls === srcId &&
+        lt === tgtId &&
+        ['SUPPORT', 'CONTRADICT', 'NEUTRAL'].includes(l.relationship_type) &&
+        !!l.reason
+      )
+    })
+    return semanticEdge?.reason ?? null
+  }, [selectedLink, effectiveGraphData.links])
 
   if (loading) {
     return (
@@ -193,22 +299,162 @@ export default function App() {
                 Top results from Semantic Scholar
               </div>
               {searchResults.map((r, i) => (
-                <button key={r.paperId} type="button" onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => { setQuery(r.title); setDropdownOpen(false) }}
-                  style={{ display: 'flex', alignItems: 'flex-start', gap: 12, width: '100%', textAlign: 'left', padding: '12px 16px', background: 'transparent', border: 'none', borderBottom: i < searchResults.length - 1 ? '1px solid rgba(255,255,255,0.05)' : 'none', cursor: 'pointer', color: '#ccd6f6', transition: 'background 0.15s' }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = lightMode ? 'rgba(0,112,243,0.06)' : 'rgba(100,255,218,0.06)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                <div
+                  key={r.paperId}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    width: '100%',
+                    padding: '12px 16px',
+                    borderBottom: i < searchResults.length - 1
+                      ? '1px solid rgba(255,255,255,0.05)'
+                      : 'none',
+                    color: '#ccd6f6',
+                    boxSizing: 'border-box',
+                  }}
                 >
-                  <span style={{ flexShrink: 0, width: 20, height: 20, borderRadius: '50%', background: lightMode ? 'rgba(0,112,243,0.1)' : 'rgba(100,255,218,0.12)', border: `1px solid ${lightMode ? 'rgba(0,112,243,0.25)' : 'rgba(100,255,218,0.25)'}`, color: lightMode ? '#0070f3' : '#64ffda', fontSize: 10, fontWeight: 700, display: 'grid', placeItems: 'center', marginTop: 2 }}>{i + 1}</span>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 500, fontSize: 13, marginBottom: 4, lineHeight: 1.4, color: '#e6f0ff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.title}</div>
-                    <div style={{ fontSize: 11, color: '#8892b0', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      {r.authors.length > 0 && <span>{r.authors.slice(0, 3).map((a) => a.name).join(', ')}{r.authors.length > 3 ? ' et al.' : ''}</span>}
-                      {r.year && <span style={{ color: lightMode ? '#0070f3' : 'rgba(100,255,218,0.5)' }}>{r.year}</span>}
-                      {r.citationCount > 0 && <span style={{ color: lightMode ? '#0070f3' : 'rgba(100,255,218,0.5)' }}>{r.citationCount.toLocaleString()} citations</span>}
+                  {/* Index badge */}
+                  <span
+                    style={{
+                      flexShrink: 0,
+                      width: 20, height: 20,
+                      borderRadius: '50%',
+                      background: 'rgba(100,255,218,0.12)',
+                      border: '1px solid rgba(100,255,218,0.25)',
+                      color: '#64ffda',
+                      fontSize: 10, fontWeight: 700,
+                      display: 'grid', placeItems: 'center',
+                    }}
+                  >
+                    {i + 1}
+                  </span>
+
+                  {/* Text — clicking sets query */}
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => { setQuery(r.title); setDropdownOpen(false) }}
+                    style={{
+                      flex: 1, minWidth: 0,
+                      background: 'none', border: 'none',
+                      cursor: 'pointer', textAlign: 'left', padding: 0,
+                    }}
+                  >
+                    <div style={{
+                      fontWeight: 500, fontSize: 13, marginBottom: 4,
+                      lineHeight: 1.4, color: '#e6f0ff',
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>
+                      {r.title}
                     </div>
-                  </div>
-                </button>
+                    <div style={{ fontSize: 11, color: '#8892b0', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {r.authors.length > 0 && (
+                        <span>
+                          {r.authors.slice(0, 3).map((a) => a.name).join(', ')}
+                          {r.authors.length > 3 ? ' et al.' : ''}
+                        </span>
+                      )}
+                      {r.year && <span style={{ color: 'rgba(100,255,218,0.5)' }}>{r.year}</span>}
+                      {r.citationCount > 0 && (
+                        <span style={{ color: 'rgba(100,255,218,0.5)' }}>
+                          {r.citationCount.toLocaleString()} citations
+                        </span>
+                      )}
+                    </div>
+                  </button>
+
+                  {/* Add button */}
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    disabled={addingId === r.paperId || addedIds.has(r.paperId)}
+                    onClick={async () => {
+                      console.log('externalIds:', JSON.stringify(r.externalIds))
+                      const arxivId = r.externalIds?.ArXiv
+                      if (!arxivId) return
+                      setAddingId(r.paperId)
+                      try {
+                        const ingest = await ingestPaper(arxivId)
+                        if (ingest.status === 'failed') {
+                          throw new Error(ingest.error ?? 'Bronze ingestion failed')
+                        }
+
+                        // Mark as added immediately after Bronze is confirmed.
+                        if (ingest.bronze_status === 'ok' || ingest.bronze_status === 'skipped') {
+                          setAddedIds((prev) => new Set(prev).add(r.paperId))
+                          setOptimisticNodes((prev) => {
+                            const normalizedTitle = r.title.trim().toLowerCase()
+                            const alreadyPresent =
+                              effectiveGraphData.nodes.some((n) => n.title.trim().toLowerCase() === normalizedTitle) ||
+                              prev.some((n) => n.title.trim().toLowerCase() === normalizedTitle)
+                            if (alreadyPresent) return prev
+
+                            const optimisticId = optimisticIdRef.current
+                            optimisticIdRef.current -= 1
+                            const authors =
+                              r.authors.length > 0
+                                ? `${r.authors.slice(0, 3).map((a) => a.name).join(', ')}${r.authors.length > 3 ? ' et al.' : ''}`
+                                : 'Unknown'
+                            return [
+                              ...prev,
+                              {
+                                id: optimisticId,
+                                title: r.title,
+                                shortTitle: r.title.slice(0, 20),
+                                authors,
+                                year: r.year ?? 0,
+                                citations: r.citationCount ?? 0,
+                                primaryTopic: 'ML',
+                                searchText: r.title,
+                              },
+                            ]
+                          })
+                        }
+
+                        const jobId = ingest.job_id
+                        // Continue the rest of the pipeline in background and refresh graph on completion.
+                        if (jobId) {
+                          setActiveRebuildJobs((n) => n + 1)
+                          void waitForIngestJob(jobId)
+                            .then(async () => {
+                              await reloadGraph()
+                              setOptimisticNodes((prev) =>
+                                prev.filter(
+                                  (n) => n.title.trim().toLowerCase() !== r.title.trim().toLowerCase(),
+                                ),
+                              )
+                            })
+                            .catch((e) => console.error('Background pipeline failed:', e))
+                            .finally(() => {
+                              setActiveRebuildJobs((n) => Math.max(0, n - 1))
+                            })
+                        }
+                      } catch (e) {
+                        console.error('Add paper failed:', e)
+                      } finally {
+                        setAddingId(null)
+                      }
+                    }}
+                    style={{
+                      flexShrink: 0,
+                      padding: '4px 10px',
+                      borderRadius: 6,
+                      border: '1px solid rgba(100,255,218,0.3)',
+                      background: addedIds.has(r.paperId)
+                        ? 'rgba(100,255,218,0.12)'
+                        : 'transparent',
+                      color: addedIds.has(r.paperId) ? '#64ffda' : 'rgba(100,255,218,0.7)',
+                      fontSize: 11, fontWeight: 600,
+                      cursor: addingId === r.paperId || addedIds.has(r.paperId)
+                        ? 'not-allowed' : 'pointer',
+                      whiteSpace: 'nowrap',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    {addingId === r.paperId ? '…' : addedIds.has(r.paperId) ? '✓ Added' : '+ Add'}
+                  </button>
+                </div>
               ))}
             </div>
           )}
@@ -231,7 +477,6 @@ export default function App() {
           <div className="avatar" aria-hidden="true" />
         </div>
       </header>
-
       <section className="content">
         {/* ── Left sidebar ── */}
         <aside className="left glass panel">
@@ -385,8 +630,8 @@ export default function App() {
           </div>
 
           <div className="stats">
-            <div className="stat"><span className="statDot statDotAccent" />Nodes: {graphData.nodes.length}</div>
-            <div className="stat"><span className="statDot statDotBlue" />Edges: {graphData.links.length}</div>
+            <div className="stat"><span className="statDot statDotAccent" />Nodes: {effectiveGraphData.nodes.length}</div>
+            <div className="stat"><span className="statDot statDotBlue" />Edges: {effectiveGraphData.links.length}</div>
             <div className="stat"><span className="statDot statDotPurple" />Clusters: {clusters.length}</div>
           </div>
         </section>
@@ -400,6 +645,32 @@ export default function App() {
               <div className="panelHeaderRow">
                 <div className="panelHeader">Topic Clusters</div>
                 <div className="panelMeta">{clusters.length} clusters</div>
+              </div>
+              <div style={{ padding: '0 16px 10px' }}>
+                <button
+                  className="ghostBtn"
+                  type="button"
+                  disabled={clustering}
+                  onClick={async () => {
+                    setClustering(true)
+                    try {
+                      await rebuildClusters(5)
+                      await reloadGraph()
+                    } catch (e) {
+                      console.error('Recluster failed:', e)
+                    } finally {
+                      setClustering(false)
+                    }
+                  }}
+                  style={{
+                    width: '100%',
+                    opacity: clustering ? 0.7 : 1,
+                    cursor: clustering ? 'not-allowed' : 'pointer',
+                  }}
+                  title="Rebuild topic clusters from current graph"
+                >
+                  {clustering ? 'Clustering…' : 'Recluster This Graph'}
+                </button>
               </div>
 
               {selectedClusterId != null ? (() => {
@@ -452,7 +723,7 @@ export default function App() {
                         onClick={() => {
                           setSelectedClusterId(c.id)
                           // highlight cluster nodes
-                          const clusterNodes = graphData.nodes.filter(n => n.clusterId === c.id)
+                          const clusterNodes = effectiveGraphData.nodes.filter(n => n.clusterId === c.id)
                           if (clusterNodes.length > 0) {
                             const cx = clusterNodes.reduce((s, n) => s + (n.x ?? 0), 0) / clusterNodes.length
                             const cy = clusterNodes.reduce((s, n) => s + (n.y ?? 0), 0) / clusterNodes.length
@@ -517,11 +788,11 @@ export default function App() {
                     </div>
 
                     {/* Reason */}
-                    {selectedLink.reason ? (
+                    {selectedLinkReason ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                         <div style={{ fontSize: 10, color: lightMode ? '#0070f3' : '#64ffda', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>Reasoning</div>
                         <p style={{ fontSize: 12, color: lightMode ? '#1a202c' : '#ccd6f6', lineHeight: 1.75, margin: 0, padding: '12px 14px', background: lightMode ? 'rgba(0,112,243,0.04)' : 'rgba(100,255,218,0.04)', borderLeft: `3px solid ${meta.color}`, borderRadius: '0 8px 8px 0' }}>
-                          {selectedLink.reason}
+                          {selectedLinkReason}
                         </p>
                       </div>
                     ) : (
@@ -558,8 +829,8 @@ export default function App() {
                       {(['SUPPORT', 'CONTRADICT', 'NEUTRAL'] as const).map(rel => {
                         const meta = REL_META[rel]
                         const count = rel === 'NEUTRAL'
-                          ? graphData.links.filter(l => l.relationship_type === 'NEUTRAL' || l.relationship_type === 'CITES').length
-                          : graphData.links.filter(l => l.relationship_type === rel).length
+                          ? effectiveGraphData.links.filter(l => l.relationship_type === 'NEUTRAL' || l.relationship_type === 'CITES').length
+                          : effectiveGraphData.links.filter(l => l.relationship_type === rel).length
                         const isActive = highlightRelType === rel
                         return (
                           <button key={rel} type="button"
@@ -642,13 +913,53 @@ export default function App() {
           )}
         </aside>
       </section>
-
-      {panelPaper && (
-        <PaperPanel
-          paper={panelPaper}
-          lightMode={lightMode}
-          onClose={() => setPanelPaper(null)}
-        />
+      {rebuildProgress > 0 && (
+        <div
+          style={{
+            position: 'fixed',
+            left: 20,
+            right: 20,
+            bottom: 16,
+            zIndex: 1200,
+            borderRadius: 10,
+            border: '1px solid rgba(100,255,218,0.28)',
+            background: 'rgba(10,25,47,0.92)',
+            boxShadow: '0 10px 28px rgba(0,0,0,0.35)',
+            padding: '10px 12px',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              fontSize: 12,
+              color: '#ccd6f6',
+              marginBottom: 8,
+            }}
+          >
+            <span>{rebuildingGraph ? 'Rebuilding graph…' : 'Graph rebuilt'}</span>
+            <span style={{ color: '#64ffda' }}>{Math.round(rebuildProgress)}%</span>
+          </div>
+          <div
+            style={{
+              width: '100%',
+              height: 8,
+              borderRadius: 999,
+              background: 'rgba(255,255,255,0.08)',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                width: `${rebuildProgress}%`,
+                height: '100%',
+                background: 'linear-gradient(90deg, #64ffda 0%, #4dd0e1 100%)',
+                transition: 'width 260ms ease',
+              }}
+            />
+          </div>
+        </div>
       )}
     </main>
   )

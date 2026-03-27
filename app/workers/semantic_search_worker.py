@@ -5,8 +5,8 @@ from typing import List, Dict, Any, Optional
 import json
 import re
 
-from utils import connect_to_snowflake
-from config import app, image, ml_image, snowflake_secret, DATABASE, qualify_table
+from app.utils import connect_to_snowflake
+from app.config import app, image, ml_image, snowflake_secret, DATABASE, qualify_table
 
 
 def _silver_table(database: str = DATABASE) -> str:

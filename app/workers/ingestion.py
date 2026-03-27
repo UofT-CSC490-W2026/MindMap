@@ -1,12 +1,12 @@
 import requests
-import arxiv
 import json
 import re
 import threading
 import time
-from config import app, image, snowflake_secret, semantic_scholar_secret, DATABASE, qualify_table
-from utils import connect_to_snowflake
 import os
+
+from app.config import app, image, snowflake_secret, semantic_scholar_secret, DATABASE, qualify_table
+from app.utils import connect_to_snowflake
 
 
 _SS_MIN_INTERVAL_SECONDS = 1.05
@@ -201,6 +201,8 @@ def ingest_from_arxiv(query: str, max_results: int = 5, database: str = DATABASE
     Fulfills Use Case 2: User types a general topic.
     Only inserts papers that don't already exist by entry_id.
     """
+    import arxiv
+
     search = arxiv.Search(query=query, max_results=max_results)
     
     conn = connect_to_snowflake(database=database, schema="BRONZE")
@@ -420,6 +422,78 @@ def peek_bronze(limit: int = 3, database: str = DATABASE):
     except Exception as e:
         print(f"Error: {e}")
     finally:
+        cur.close()
+        conn.close()
+
+
+# ingest a single paper: for use case where user searches and selects a paper from the dropdown
+# to add to their MindMap
+@app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret], timeout=60 * 5)
+def ingest_single_paper(arxiv_id: str, database: str = DATABASE):
+    """Ingest one specific paper by arXiv ID. Used when user clicks '+ Add' on a search result."""
+    bronze_table = _bronze_papers_table(database=database)
+    entry_id = f"https://arxiv.org/abs/{arxiv_id}"
+    print(f"[ingest_single_paper] start arxiv_id={arxiv_id} database={database} table={bronze_table}", flush=True)
+
+    print("[ingest_single_paper] connecting to Snowflake (BRONZE schema)", flush=True)
+    conn = connect_to_snowflake(database=database, schema="BRONZE")
+    cur = conn.cursor()
+    try:
+        print(f"[ingest_single_paper] duplicate check entry_id={entry_id}", flush=True)
+        cur.execute(
+            f'SELECT 1 FROM {bronze_table} WHERE "raw_payload":entry_id::STRING = %s LIMIT 1',
+            (entry_id,)
+        )
+        if cur.fetchone():
+            print(f"Paper {arxiv_id} already exists in Bronze, skipping.")
+            return {"status": "skipped", "arxiv_id": arxiv_id}
+
+        url = f"https://api.semanticscholar.org/graph/v1/paper/ArXiv:{arxiv_id}"
+        params = {
+            "fields": (
+                "paperId,title,abstract,authors,externalIds,year,url,openAccessPdf,"
+                "publicationDate,journal,citationCount,referenceCount"
+            )
+        }
+        print(f"[ingest_single_paper] fetching Semantic Scholar url={url}", flush=True)
+        paper = _ss_get_json(url=url, params=params, timeout=30.0)
+        print("[ingest_single_paper] Semantic Scholar response received", flush=True)
+        external_ids = paper.get("externalIds") or {}
+        open_pdf = paper.get("openAccessPdf") or {}
+        authors = [a.get("name") for a in (paper.get("authors") or []) if a.get("name")]
+
+        raw_data = {
+            "source": "semantic_scholar",
+            "entry_id": entry_id,
+            "ss_paper_id": paper.get("paperId"),
+            "year": paper.get("year"),
+            "citationCount": paper.get("citationCount"),
+            "updated": str(paper.get("publicationDate") or ""),
+            "published": str(paper.get("publicationDate") or ""),
+            "title": paper.get("title"),
+            "authors": authors,
+            "summary": paper.get("abstract"),
+            "comment": None,
+            "journal_ref": (paper.get("journal") or {}).get("name"),
+            "doi": external_ids.get("DOI"),
+            "primary_category": None,
+            "categories": [],
+            "links": [paper.get("url")] if paper.get("url") else [],
+            "pdf_url": open_pdf.get("url"),
+            "external_ids": external_ids,
+        }
+
+        print("[ingest_single_paper] inserting row into BRONZE_PAPERS", flush=True)
+        cur.execute(
+            f'INSERT INTO {bronze_table} ("raw_payload") SELECT PARSE_JSON(%s)',
+            (json.dumps(raw_data),)
+        )
+        print("[ingest_single_paper] committing transaction", flush=True)
+        conn.commit()
+        print(f"Ingested single paper: {arxiv_id}")
+        return {"status": "ok", "arxiv_id": arxiv_id}
+    finally:
+        print("[ingest_single_paper] closing Snowflake cursor/connection", flush=True)
         cur.close()
         conn.close()
 

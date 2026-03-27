@@ -7,9 +7,16 @@ import json
 import pstats
 from typing import Iterable, List, Optional, Tuple
 
-from config import app, image, snowflake_secret, DATABASE, qualify_table
-from config import clustering_image, llm_image, openai_secret
-from utils import connect_to_snowflake
+try:
+    from app.config import app, image, snowflake_secret, DATABASE, qualify_table
+    from app.config import clustering_image, llm_image, openai_secret, APP_DIR
+    from app.utils import connect_to_snowflake
+except ModuleNotFoundError:
+    # Support direct execution paths such as:
+    # modal run app/workers/graph_worker.py::build_knowledge_graph
+    from config import app, image, snowflake_secret, DATABASE, qualify_table
+    from config import clustering_image, llm_image, openai_secret, APP_DIR
+    from utils import connect_to_snowflake
 
 _PROFILE_LOG = "/tmp/profile_output.txt"
 
@@ -32,7 +39,7 @@ def _silver_table(database: str = DATABASE) -> str:
 
 
 def _gold_table(database: str = DATABASE) -> str:
-    return qualify_table("GOLD_PAPER_RELATIONSHIPS", database=database)
+    return qualify_table("GOLD_CONNECTIONS", database=database)
 
 
 def _quote_ident(identifier: str) -> str:
@@ -94,27 +101,40 @@ def _fetch_papers(cur, paper_id: Optional[int], database: str = DATABASE) -> Lis
     profiler.enable()
 
     silver = _silver_table(database=database)
-    # Added "conclusion" to the required columns list
+    col_map = _resolve_table_columns(cur, silver)
     cols = _require_columns(
-        _resolve_table_columns(cur, silver),
-        ["id", "citation_list", "similar_embeddings_ids", "conclusion"], 
+        col_map,
+        ["id", "similar_embeddings_ids", "conclusion"],
         silver,
     )
-    
-    # Updated SELECT statement to pull the conclusion text
-    query = f'SELECT {cols["id"]}, {cols["citation_list"]}, {cols["similar_embeddings_ids"]}, {cols["conclusion"]} FROM {silver}'
-    
+    references_col = col_map.get("reference_list")
+    citations_col = col_map.get("citation_list")
+    if not references_col and not citations_col:
+        raise RuntimeError(
+            f"Missing required citation source columns in {silver}: "
+            "expected at least one of ['reference_list', 'citation_list']."
+        )
+    if references_col and citations_col:
+        citation_source_expr = f"COALESCE({references_col}, {citations_col})"
+        citation_filter_expr = f"{references_col} IS NOT NULL OR {citations_col} IS NOT NULL"
+    else:
+        only_col = references_col or citations_col
+        citation_source_expr = str(only_col)
+        citation_filter_expr = f"{only_col} IS NOT NULL"
+
+    query = (
+        f'SELECT {cols["id"]}, {citation_source_expr}, '
+        f'{cols["similar_embeddings_ids"]}, {cols["conclusion"]} FROM {silver}'
+    )
+
     if paper_id is not None:
         cur.execute(f"{query} WHERE {cols['id']} = %s", (int(paper_id),))
     else:
-        cur.execute(f"{query} WHERE {cols['citation_list']} IS NOT NULL OR {cols['similar_embeddings_ids']} IS NOT NULL")
-    
-    result = cur.fetchall()
+        cur.execute(
+            f"{query} WHERE {citation_filter_expr} OR {cols['similar_embeddings_ids']} IS NOT NULL"
+        )
 
-    profiler.disable()
-    _write_profile("_fetch_papers", profiler)
-
-    return result
+    return cur.fetchall()
 
 def _normalize_json_list(value) -> list:
     if value is None:
@@ -138,36 +158,95 @@ def _normalize_ids(value) -> List[int]:
 
 
 def _citation_targets(cur, citations: Iterable[dict], database: str = DATABASE) -> List[int]:
-    ss_ids = []
+    ss_ids: List[str] = []
+    arxiv_ids: List[str] = []
+    dois: List[str] = []
     for citation in citations:
         if not isinstance(citation, dict):
             continue
         ss_id = citation.get("ss_paper_id")
         if ss_id:
             ss_ids.append(str(ss_id))
+        arxiv_id = citation.get("arxiv_id")
+        if arxiv_id:
+            arxiv_ids.append(str(arxiv_id))
+        doi = citation.get("doi")
+        if doi:
+            dois.append(str(doi).lower())
 
-    if not ss_ids:
+    if not ss_ids and not arxiv_ids and not dois:
+        print("[graph][citation_targets] no identifiers found in citation payload")
         return []
 
     silver = _silver_table(database=database)
-    cols = _require_columns(
-        _resolve_table_columns(cur, silver),
-        ["id", "ss_id"],
-        silver,
+    col_map = _resolve_table_columns(cur, silver)
+    cols = _require_columns(col_map, ["id"], silver)
+    targets: set[int] = set()
+    ss_matches = 0
+    arxiv_matches = 0
+    doi_matches = 0
+
+    print(
+        "[graph][citation_targets] identifiers extracted: "
+        f"ss_ids={len(ss_ids)} arxiv_ids={len(arxiv_ids)} dois={len(dois)} "
+        f"sample_ss={ss_ids[:3]} sample_arxiv={arxiv_ids[:3]} sample_doi={dois[:2]}"
     )
 
-    values_sql = ", ".join(["(%s)"] * len(ss_ids))
-    cur.execute(
-        f"""
-        WITH source_ss_ids(ss_id) AS (SELECT column1 FROM VALUES {values_sql})
+    if ss_ids and "ss_id" in col_map:
+        values_sql = ", ".join(["(%s)"] * len(ss_ids))
+        cur.execute(
+            f"""
+            WITH source_ss_ids(ss_id) AS (SELECT column1 FROM VALUES {values_sql})
             SELECT DISTINCT sp.{cols["id"]}
-        FROM source_ss_ids src
-        JOIN {silver} sp
-            ON sp.{cols["ss_id"]} = src.ss_id
-        """,
-        ss_ids,
+            FROM source_ss_ids src
+            JOIN {silver} sp
+              ON sp.{col_map["ss_id"]} = src.ss_id
+            """,
+            ss_ids,
+        )
+        rows = [int(row[0]) for row in cur.fetchall()]
+        ss_matches = len(rows)
+        targets.update(rows)
+
+    if arxiv_ids and "arxiv_id" in col_map:
+        values_sql = ", ".join(["(%s)"] * len(arxiv_ids))
+        cur.execute(
+            f"""
+            WITH source_arxiv_ids(arxiv_id) AS (SELECT column1 FROM VALUES {values_sql})
+            SELECT DISTINCT sp.{cols["id"]}
+            FROM source_arxiv_ids src
+            JOIN {silver} sp
+              ON sp.{col_map["arxiv_id"]} = src.arxiv_id
+            """,
+            arxiv_ids,
+        )
+        rows = [int(row[0]) for row in cur.fetchall()]
+        arxiv_matches = len(rows)
+        targets.update(rows)
+
+    if dois and "doi" in col_map:
+        values_sql = ", ".join(["(%s)"] * len(dois))
+        cur.execute(
+            f"""
+            WITH source_dois(doi) AS (SELECT column1 FROM VALUES {values_sql})
+            SELECT DISTINCT sp.{cols["id"]}
+            FROM source_dois src
+            JOIN {silver} sp
+              ON LOWER(sp.{col_map["doi"]}) = src.doi
+            """,
+            dois,
+        )
+        rows = [int(row[0]) for row in cur.fetchall()]
+        doi_matches = len(rows)
+        targets.update(rows)
+
+    resolved = list(targets)
+    print(
+        "[graph][citation_targets] match results: "
+        f"ss={ss_matches} arxiv={arxiv_matches} doi={doi_matches} "
+        f"resolved_total={len(resolved)} resolved_sample={resolved[:10]}"
     )
-    return [int(row[0]) for row in cur.fetchall()]
+    return resolved
 
 
 def _dedupe_edges(edges: Iterable[Tuple]) -> List[Tuple]:
@@ -182,7 +261,7 @@ def _dedupe_edges(edges: Iterable[Tuple]) -> List[Tuple]:
             seen[key] = (float(strength), reason)
     return [(sid, tid, rel, strength, reason) for (sid, tid, rel), (strength, reason) in seen.items()]
 
-def _bulk_merge_edges(cur, edges: List[Tuple[int, int, str, float]], database: str = DATABASE) -> int:
+def _bulk_merge_edges(cur, edges: List[Tuple], database: str = DATABASE) -> int:
     """
     Perform a high-performance bulk upsert of relationship edges into the GOLD layer.
 
@@ -217,42 +296,73 @@ def _bulk_merge_edges(cur, edges: List[Tuple[int, int, str, float]], database: s
     gold = _gold_table(database=database)
 
     # safety check: verify that the target table actually has the columns needed for graph edges
+    col_map = _resolve_table_columns(cur, gold)
     cols = _require_columns(
-        _resolve_table_columns(cur, gold),
-        ["source_paper_id", "target_paper_id", "relationship_type", "strength", "reason"],
+        col_map,
+        ["source_paper_id", "target_paper_id", "relationship_type", "strength"],
         gold,
     )
+    has_reason = "reason" in col_map
 
-    # dynamically build the placeholders for the multi-row sql values
-    values_sql = ", ".join(["(%s, %s, %s, %s, %s)"] * len(edges))
-
-    # flatten the list of tuples into a single list of parameters for the snowflake driver
-    params = [value for edge in edges for value in edge]
-
-    cur.execute(
-        f"""
-        MERGE INTO {gold} AS target
-        USING (
-            SELECT
-                column1 AS source_paper_id,
-                column2 AS target_paper_id,
-                column3 AS relationship_type,
-                column4 AS strength,
-                column5 AS reason
-            FROM VALUES {values_sql}
-        ) AS source
-        ON target.{cols["source_paper_id"]} = source.source_paper_id
-           AND target.{cols["target_paper_id"]} = source.target_paper_id
-           AND target.{cols["relationship_type"]} = source.relationship_type
-        WHEN MATCHED THEN
-            UPDATE SET target.{cols["strength"]} = source.strength,
-                       target.{cols["reason"]} = source.reason
-        WHEN NOT MATCHED THEN
-            INSERT ({cols["source_paper_id"]}, {cols["target_paper_id"]}, {cols["relationship_type"]}, {cols["strength"]}, {cols["reason"]})
-            VALUES (source.source_paper_id, source.target_paper_id, source.relationship_type, source.strength, source.reason)
-        """,
-        params,
-    )
+    if has_reason:
+        values_sql = ", ".join(["(%s, %s, %s, %s, %s)"] * len(edges))
+        params = []
+        for edge in edges:
+            source_id, target_id, rel_type, strength = edge[0], edge[1], edge[2], edge[3]
+            reason = edge[4] if len(edge) > 4 else None
+            params.extend([source_id, target_id, rel_type, strength, reason])
+        cur.execute(
+            f"""
+            MERGE INTO {gold} AS target
+            USING (
+                SELECT
+                    column1 AS source_paper_id,
+                    column2 AS target_paper_id,
+                    column3 AS relationship_type,
+                    column4 AS strength,
+                    column5 AS reason
+                FROM VALUES {values_sql}
+            ) AS source
+            ON target.{cols["source_paper_id"]} = source.source_paper_id
+               AND target.{cols["target_paper_id"]} = source.target_paper_id
+               AND target.{cols["relationship_type"]} = source.relationship_type
+            WHEN MATCHED THEN
+                UPDATE SET target.{cols["strength"]} = source.strength,
+                           target.{col_map["reason"]} = source.reason
+            WHEN NOT MATCHED THEN
+                INSERT ({cols["source_paper_id"]}, {cols["target_paper_id"]}, {cols["relationship_type"]}, {cols["strength"]}, {col_map["reason"]})
+                VALUES (source.source_paper_id, source.target_paper_id, source.relationship_type, source.strength, source.reason)
+            """,
+            params,
+        )
+    else:
+        values_sql = ", ".join(["(%s, %s, %s, %s)"] * len(edges))
+        params = []
+        for edge in edges:
+            source_id, target_id, rel_type, strength = edge[0], edge[1], edge[2], edge[3]
+            params.extend([source_id, target_id, rel_type, strength])
+        cur.execute(
+            f"""
+            MERGE INTO {gold} AS target
+            USING (
+                SELECT
+                    column1 AS source_paper_id,
+                    column2 AS target_paper_id,
+                    column3 AS relationship_type,
+                    column4 AS strength
+                FROM VALUES {values_sql}
+            ) AS source
+            ON target.{cols["source_paper_id"]} = source.source_paper_id
+               AND target.{cols["target_paper_id"]} = source.target_paper_id
+               AND target.{cols["relationship_type"]} = source.relationship_type
+            WHEN MATCHED THEN
+                UPDATE SET target.{cols["strength"]} = source.strength
+            WHEN NOT MATCHED THEN
+                INSERT ({cols["source_paper_id"]}, {cols["target_paper_id"]}, {cols["relationship_type"]}, {cols["strength"]})
+                VALUES (source.source_paper_id, source.target_paper_id, source.relationship_type, source.strength)
+            """,
+            params,
+        )
     
     # return the count of processed edges for the orchestrator's telemetry report
     return len(edges)
@@ -290,8 +400,6 @@ def build_knowledge_graph(paper_id: int = None, database: str = DATABASE):
 
         print(f"Processing {len(papers)} papers from SILVER to build relationships in GOLD...")
 
-        classifier = RelationshipClassifier()
-        print("Initialized relationship classifier for semantic edge inference.")
         classify_queue: List[Tuple[int, int, str, str]] = []
 
         # Iterate over each paper and extract relationships
@@ -300,7 +408,15 @@ def build_knowledge_graph(paper_id: int = None, database: str = DATABASE):
             print(f"paper {pid}: {len(_normalize_json_list(citations))} citations, {len(_normalize_json_list(similar_ids))} similar papers")
 
             # For each citation, add a CITES edge from this paper to the cited paper
-            for target_id in _citation_targets(cur, _normalize_json_list(citations), database=database):
+            citation_entries = _normalize_json_list(citations)
+            citation_targets = _citation_targets(cur, citation_entries, database=database)
+            print(
+                f"[graph] paper {pid} citation_entries={len(citation_entries)} "
+                f"resolved_targets={len(citation_targets)} targets={citation_targets[:10]}"
+            )
+            if citation_entries and not citation_targets:
+                print(f"[graph][warn] paper {pid} has citations but no resolvable targets in SILVER")
+            for target_id in citation_targets:
                 edges.append((int(pid), target_id, "CITES", 1.0, None))
 
             # For each similar paper, add a SIMILAR edge with decreasing strength
@@ -330,25 +446,55 @@ def build_knowledge_graph(paper_id: int = None, database: str = DATABASE):
                 if target_row and target_row[0]:
                     classify_queue.append((int(pid), target_id, p_conclusion, target_row[0]))
 
-        # Batch all classification pairs through the GPU container in parallel
-        if classify_queue:
-            print(f"Running batch classification for {len(classify_queue)} pairs...")
-            inputs = [(src_conc, tgt_conc) for _, _, src_conc, tgt_conc in classify_queue]
-            results = list(classifier.classify.map(inputs))
-            for (pid, target_id, _, _), (label, reason) in zip(classify_queue, results):
-                print(f"Classifier output for paper {pid} vs {target_id}: {label} — {reason}")
-                edges.append((pid, target_id, label, 1.0, reason))
-
-        # Deduplicate and bulk-merge all edges into the GOLD_PAPER_RELATIONSHIPS table
-        merged_count = _bulk_merge_edges(cur, _dedupe_edges(edges), database=database)
-        print(f"Graph build complete. Total edges merged into GOLD: {merged_count}")
+        # Phase 1: Persist deterministic edges first so CITES/SIMILAR never depend on LLM success.
+        base_edges = _dedupe_edges(edges)
+        base_merged_count = _bulk_merge_edges(cur, base_edges, database=database)
         conn.commit()
+        print(
+            "Graph build phase 1 complete. "
+            f"Deterministic edges merged into GOLD: {base_merged_count}"
+        )
 
-        profiler.disable()
-        _write_profile("build_knowledge_graph", profiler)
+        semantic_merged_count = 0
+        semantic_error = None
 
-        # Return summary statistics
-        return {"papers_processed": len(papers), "edges_merged": merged_count}
+        # Phase 2: Best-effort semantic classification. Failures here should not roll back phase 1.
+        if classify_queue:
+            try:
+                classifier = RelationshipClassifier()
+                print("Initialized relationship classifier for semantic edge inference.")
+                print(f"Running batch classification for {len(classify_queue)} pairs...")
+                inputs = [(src_conc, tgt_conc) for _, _, src_conc, tgt_conc in classify_queue]
+                results = list(classifier.classify.map(inputs))
+                semantic_edges: List[Tuple[int, int, str, float, Optional[str]]] = []
+                for (pid, target_id, _, _), (label, reason) in zip(classify_queue, results):
+                    print(f"Classifier output for paper {pid} vs {target_id}: {label} — {reason}")
+                    semantic_edges.append((pid, target_id, label, 1.0, reason))
+
+                semantic_merged_count = _bulk_merge_edges(
+                    cur, _dedupe_edges(semantic_edges), database=database
+                )
+                conn.commit()
+                print(
+                    "Graph build phase 2 complete. "
+                    f"Semantic edges merged into GOLD: {semantic_merged_count}"
+                )
+            except Exception as e:
+                conn.rollback()
+                semantic_error = str(e)
+                print(
+                    "Graph build phase 2 failed; deterministic edges were already committed. "
+                    f"semantic_error={semantic_error}"
+                )
+
+        total_merged = int(base_merged_count) + int(semantic_merged_count)
+        return {
+            "papers_processed": len(papers),
+            "edges_merged": total_merged,
+            "base_edges_merged": int(base_merged_count),
+            "semantic_edges_merged": int(semantic_merged_count),
+            "semantic_error": semantic_error,
+        }
     finally:
         # Always close the cursor and connection
         cur.close()
@@ -357,6 +503,25 @@ def build_knowledge_graph(paper_id: int = None, database: str = DATABASE):
 
 def _gold_clusters_table(database: str = DATABASE) -> str:
     return qualify_table("GOLD_PAPER_CLUSTERS", database=database)
+
+
+def _ensure_gold_clusters_table(cur, database: str = DATABASE) -> str:
+    """
+    Ensure GOLD_PAPER_CLUSTERS exists for environments where Terraform hasn't created it yet.
+    """
+    clusters_table = _gold_clusters_table(database=database)
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {clusters_table} (
+            "paper_id" NUMBER,
+            "cluster_id" NUMBER,
+            "cluster_label" STRING,
+            "cluster_name" STRING,
+            "cluster_description" STRING
+        )
+        """
+    )
+    return clusters_table
 
 
 @app.function(image=clustering_image.pip_install("openai"), secrets=[snowflake_secret, openai_secret])
@@ -461,7 +626,7 @@ def run_topic_clustering(n_clusters: int = 5, database: str = DATABASE):
         gold_conn = connect_to_snowflake(database=database, schema="GOLD")
         gold_cur = gold_conn.cursor()
         try:
-            clusters_table = _gold_clusters_table(database=database)
+            clusters_table = _ensure_gold_clusters_table(gold_cur, database=database)
             cols_c = _require_columns(
                 _resolve_table_columns(gold_cur, clusters_table),
                 ["paper_id", "cluster_id", "cluster_label", "cluster_name", "cluster_description"],
@@ -526,8 +691,6 @@ def run_topic_clustering(n_clusters: int = 5, database: str = DATABASE):
 
 from modal import method, enter
 import modal
-
-from config import APP_DIR
 
 inference_image = (
     modal.Image.debian_slim(python_version="3.10")

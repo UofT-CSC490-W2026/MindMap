@@ -4,8 +4,18 @@ import os
 
 app = modal.App("mindmap-pipeline")
 APP_DIR = Path(__file__).resolve().parent
-DATABASE = f"MINDMAP_{os.getenv('MINDMAP_ENV', 'DEV').upper()}" # e.g. MINDMAP_DEV, MINDMAP_PROD
-WAREHOUSE = f"MINDMAP_{os.getenv('MINDMAP_ENV', 'DEV').upper()}_WH" # e.g. MINDMAP_DEV_WH, MINDMAP_PROD_WH
+
+_env_name = (os.getenv("MINDMAP_ENV") or "DEV").strip().upper()
+if os.getenv("SNOWFLAKE_DATABASE"):
+    DATABASE = os.getenv("SNOWFLAKE_DATABASE")
+else:
+    DATABASE = f"MINDMAP_{_env_name}"  # e.g. MINDMAP_DEV, MINDMAP_PROD
+
+if os.getenv("SNOWFLAKE_WAREHOUSE"):
+    WAREHOUSE = os.getenv("SNOWFLAKE_WAREHOUSE")
+else:
+    WAREHOUSE = f"MINDMAP_{_env_name}_WH"  # e.g. MINDMAP_DEV_WH, MINDMAP_PROD_WH
+
 
 def resolve_schema_for_table(table_name: str) -> str:
     """

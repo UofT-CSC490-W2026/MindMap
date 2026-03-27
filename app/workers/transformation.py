@@ -4,8 +4,9 @@ import time
 import os
 import random
 from typing import Any, Dict, List, Optional
-from config import app, image, snowflake_secret, semantic_scholar_secret, DATABASE, qualify_table
-from utils import connect_to_snowflake
+
+from app.config import app, image, snowflake_secret, semantic_scholar_secret, DATABASE, qualify_table
+from app.utils import connect_to_snowflake
 
 
 _SS_MIN_INTERVAL_SECONDS = 1.05
@@ -233,7 +234,7 @@ def _extract_connections(items: list, relation_key: str, limit: int = 10) -> Lis
     return results
 
 
-def _fetch_ss_batch_metadata(arxiv_ids: List[str], batch_size: int = 100, relation_limit: int = 10) -> Dict[str, Dict[str, Any]]:
+def _fetch_ss_batch_metadata(arxiv_ids: List[str], batch_size: int = 100, relation_limit: int = 100) -> Dict[str, Dict[str, Any]]:
     """
     Fetch ss_id + references + citations using Semantic Scholar batch endpoint.
     Returns a mapping keyed by arxiv_id.
@@ -476,7 +477,7 @@ def fetch_connections_ss(arxiv_id: str, mode=0):
     # We ask for specific fields to keep the payload clean
     params = {
         "fields": "title,authors,year,externalIds",
-        "limit": 10
+        "limit": 100
     }
 
     print(f"Querying Semantic Scholar for: {arxiv_id}")
@@ -596,153 +597,195 @@ def transform_to_silver(
     database: str = DATABASE,
 ):
     import json
-    
-    try:
-        # 1. Primary TLDR strategy: Semantic Scholar TLDR (more reliable than PDF parsing).
-        tldr_text = ""
-        conclusion_text = ""
-        full_text = ""
-        full_text_source = "unavailable"
-        refs_data: List[dict] = []
-        cites_data: List[dict] = []
-        ss_id = None
+    tldr_text = ""
+    conclusion_text = ""
+    full_text = ""
+    full_text_source = "unavailable"
+    refs_data: List[dict] = []
+    cites_data: List[dict] = []
+    ss_id = None
 
-        full_text_result = extract_full_text_pdf.local(arxiv_id)
-        full_text = (full_text_result.get("full_text") or "").strip()
-        full_text_source = str(full_text_result.get("source") or "unavailable")
-        if full_text:
-            conclusion_text = _extract_conclusion_from_text(full_text)
+    full_text_result = extract_full_text_pdf.local(arxiv_id)
+    full_text = (full_text_result.get("full_text") or "").strip()
+    full_text_source = str(full_text_result.get("source") or "unavailable")
+    if full_text:
+        conclusion_text = _extract_conclusion_from_text(full_text)
 
-        if ss_prefetched:
-            tldr_text = (ss_prefetched.get("tldr") or "").strip()
-            refs_data = ss_prefetched.get("references", []) or []
-            cites_data = ss_prefetched.get("citations", []) or []
-            ss_id = ss_prefetched.get("ss_id")
-        else:
+    if ss_prefetched:
+        tldr_text = (ss_prefetched.get("tldr") or "").strip()
+        refs_data = ss_prefetched.get("references", []) or []
+        cites_data = ss_prefetched.get("citations", []) or []
+        ss_id = ss_prefetched.get("ss_id")
+        # Batch metadata occasionally returns sparse/empty connections for a paper.
+        # Fall back to direct endpoints so citation edges are not lost.
+        if not refs_data:
             refs_task = get_references.local(arxiv_id)
-            cites_task = fetch_connections_ss.local(arxiv_id, mode=1)
-
             refs_data = refs_task.get("data", []) if refs_task else []
+        if not cites_data:
+            cites_task = fetch_connections_ss.local(arxiv_id, mode=1)
             cites_data = cites_task if cites_task else []
+    else:
+        refs_task = get_references.local(arxiv_id)
+        cites_task = fetch_connections_ss.local(arxiv_id, mode=1)
+        refs_data = refs_task.get("data", []) if refs_task else []
+        cites_data = cites_task if cites_task else []
 
-            # 2. Get the SS_ID for the primary paper
-            # We query SS directly for the seed paper's ID to ensure we have it for the check
-            try:
-                ss_data = _ss_get_json(
-                    url=f"https://api.semanticscholar.org/graph/v1/paper/ARXIV:{arxiv_id}",
-                    params={"fields": "paperId"},
-                    timeout=20.0,
-                )
-                ss_id = ss_data.get("paperId")
-            except Exception:
-                pass
+    if not ss_id:
+        try:
+            ss_data = _ss_get_json(
+                url=f"https://api.semanticscholar.org/graph/v1/paper/ARXIV:{arxiv_id}",
+                params={"fields": "paperId"},
+                timeout=20.0,
+            )
+            ss_id = ss_data.get("paperId")
+        except Exception:
+            pass
 
-        if not tldr_text:
-            tldr_text = conclusion_text or extract_conclusion.local(arxiv_id)
+    if not tldr_text:
+        tldr_text = conclusion_text or extract_conclusion.local(arxiv_id)
 
-        conn = connect_to_snowflake(database=database, schema="SILVER")
-        cur = conn.cursor()
+    final_conclusion = tldr_text or conclusion_text
+
+    conn = connect_to_snowflake(database=database, schema="SILVER")
+    cur = conn.cursor()
+    try:
+        bronze_table = _bronze_papers_table(database=database)
         payload_col = _resolve_bronze_payload_column(cur, database=database)
         silver_table = _silver_papers_table(database=database)
+        silver_col_map = _resolve_table_columns(cur, silver_table)
         silver_cols = _require_columns(
-            _resolve_table_columns(cur, silver_table),
-            [
-                "arxiv_id",
-                "ss_id",
-                "conclusion",
-                "full_text",
-                "full_text_source",
-                "full_text_extracted_at",
-                "tldr",
-                "reference_list",
-                "citation_list",
-                "title",
-                "abstract",
-            ],
+            silver_col_map,
+            ["arxiv_id", "ss_id", "title", "abstract", "conclusion", "reference_list", "citation_list"],
             silver_table,
         )
 
-        try:
-            # 3. Dual-Key MERGE Logic
-            # This matches if EITHER the arxiv_id OR the ss_paper_id exists.
-            cur.execute("""
-                MERGE INTO {silver_papers} target
-                USING (
-                    SELECT 
-                        %s as arxiv_id,
-                        %s as ss_id,
-                        {payload_col}:title::STRING as title,
-                        {payload_col}:summary::STRING as abstract,
-                        %s as conclusion,
-                        %s as full_text,
-                        %s as full_text_source,
-                        %s as tldr,
-                        PARSE_JSON(%s) as reference_list,
-                        PARSE_JSON(%s) as citation_list
-                    FROM {bronze_papers}
-                    WHERE {payload_col}:entry_id::STRING LIKE %s
-                    LIMIT 1
-                ) source
-                ON target.{arxiv_id_col} = source.arxiv_id OR (target.{ss_id_col} = source.ss_id AND source.ss_id IS NOT NULL)
-                WHEN MATCHED THEN
-                    UPDATE SET 
-                        target.{arxiv_id_col} = COALESCE(target.{arxiv_id_col}, source.arxiv_id),
-                        target.{ss_id_col} = COALESCE(target.{ss_id_col}, source.ss_id),
-                        target.{conclusion_col} = COALESCE(source.conclusion, target.{conclusion_col}),
-                        target.{full_text_col} = COALESCE(NULLIF(source.full_text, ''), target.{full_text_col}),
-                        target.{full_text_source_col} = CASE
-                            WHEN source.full_text IS NOT NULL AND LENGTH(TRIM(source.full_text)) > 0 THEN source.full_text_source
-                            ELSE target.{full_text_source_col}
-                        END,
-                        target.{full_text_extracted_at_col} = CASE
-                            WHEN source.full_text IS NOT NULL AND LENGTH(TRIM(source.full_text)) > 0 THEN CURRENT_TIMESTAMP()
-                            ELSE target.{full_text_extracted_at_col}
-                        END,
-                        target.{tldr_col} = source.tldr,
-                        target.{reference_list_col} = source.reference_list,
-                        target.{citation_list_col} = source.citation_list
-                WHEN NOT MATCHED THEN
-                    INSERT ({arxiv_id_col}, {ss_id_col}, {title_col}, {abstract_col}, {conclusion_col}, {full_text_col}, {full_text_source_col}, {full_text_extracted_at_col}, {tldr_col}, {reference_list_col}, {citation_list_col})
-                    VALUES (source.arxiv_id, source.ss_id, source.title, source.abstract, source.conclusion, source.full_text, source.full_text_source, CURRENT_TIMESTAMP(), source.tldr, source.reference_list, source.citation_list);
-            """.format(
-                silver_papers=silver_table,
-                bronze_papers=_bronze_papers_table(database=database),
-                payload_col=payload_col,
-                arxiv_id_col=silver_cols["arxiv_id"],
-                ss_id_col=silver_cols["ss_id"],
-                title_col=silver_cols["title"],
-                abstract_col=silver_cols["abstract"],
-                conclusion_col=silver_cols["conclusion"],
-                full_text_col=silver_cols["full_text"],
-                full_text_source_col=silver_cols["full_text_source"],
-                full_text_extracted_at_col=silver_cols["full_text_extracted_at"],
-                tldr_col=silver_cols["tldr"],
-                reference_list_col=silver_cols["reference_list"],
-                citation_list_col=silver_cols["citation_list"],
-            ), (
-                arxiv_id,
-                ss_id, 
-                conclusion_text,
-                full_text,
-                full_text_source,
-                tldr_text,
-                json.dumps(refs_data), 
-                json.dumps(cites_data), 
-                f"%{arxiv_id}%",
-            ))
+        has_full_text = "full_text" in silver_col_map
+        has_full_text_source = "full_text_source" in silver_col_map
+        has_full_text_extracted_at = "full_text_extracted_at" in silver_col_map
+        has_tldr = "tldr" in silver_col_map
 
-            conn.commit()
-            print(f"Processed {arxiv_id} (SS_ID: {ss_id}) into Silver.")
+        select_lines = [
+            "%s AS arxiv_id",
+            "%s AS ss_id",
+            f"{payload_col}:title::STRING AS title",
+            f"{payload_col}:summary::STRING AS abstract",
+            "%s AS conclusion",
+            "PARSE_JSON(%s) AS reference_list",
+            "PARSE_JSON(%s) AS citation_list",
+        ]
+        binds: List[Any] = [
+            arxiv_id,
+            ss_id,
+            final_conclusion,
+            json.dumps(refs_data),
+            json.dumps(cites_data),
+        ]
 
-        except Exception as e:
-            print(f"Database Error for {arxiv_id}: {e}")
-            conn.rollback()
-        finally:
-            cur.close()
-            conn.close()
-    
+        if has_full_text:
+            select_lines.append("%s AS full_text")
+            binds.append(full_text)
+        if has_full_text_source:
+            select_lines.append("%s AS full_text_source")
+            binds.append(full_text_source)
+        if has_tldr:
+            select_lines.append("%s AS tldr")
+            binds.append(tldr_text)
+
+        binds.append(f"%{arxiv_id}%")
+
+        update_lines = [
+            f'target.{silver_cols["arxiv_id"]} = COALESCE(target.{silver_cols["arxiv_id"]}, source.arxiv_id)',
+            f'target.{silver_cols["ss_id"]} = COALESCE(target.{silver_cols["ss_id"]}, source.ss_id)',
+            f'target.{silver_cols["conclusion"]} = COALESCE(NULLIF(source.conclusion, \'\'), target.{silver_cols["conclusion"]})',
+            f'target.{silver_cols["reference_list"]} = source.reference_list',
+            f'target.{silver_cols["citation_list"]} = source.citation_list',
+        ]
+        if has_full_text:
+            full_text_col = silver_col_map["full_text"]
+            update_lines.append(
+                f"target.{full_text_col} = COALESCE(NULLIF(source.full_text, ''), target.{full_text_col})"
+            )
+        if has_full_text_source:
+            full_text_source_col = silver_col_map["full_text_source"]
+            update_lines.append(
+                f"target.{full_text_source_col} = CASE "
+                f"WHEN source.full_text IS NOT NULL AND LENGTH(TRIM(source.full_text)) > 0 THEN source.full_text_source "
+                f"ELSE target.{full_text_source_col} END"
+            )
+        if has_full_text_extracted_at:
+            full_text_extracted_at_col = silver_col_map["full_text_extracted_at"]
+            update_lines.append(
+                f"target.{full_text_extracted_at_col} = CASE "
+                f"WHEN source.full_text IS NOT NULL AND LENGTH(TRIM(source.full_text)) > 0 THEN CURRENT_TIMESTAMP() "
+                f"ELSE target.{full_text_extracted_at_col} END"
+            )
+        if has_tldr:
+            tldr_col = silver_col_map["tldr"]
+            update_lines.append(
+                f"target.{tldr_col} = COALESCE(NULLIF(source.tldr, ''), target.{tldr_col})"
+            )
+
+        insert_cols = [
+            silver_cols["arxiv_id"],
+            silver_cols["ss_id"],
+            silver_cols["title"],
+            silver_cols["abstract"],
+            silver_cols["conclusion"],
+            silver_cols["reference_list"],
+            silver_cols["citation_list"],
+        ]
+        insert_vals = [
+            "source.arxiv_id",
+            "source.ss_id",
+            "source.title",
+            "source.abstract",
+            "source.conclusion",
+            "source.reference_list",
+            "source.citation_list",
+        ]
+        if has_full_text:
+            insert_cols.append(silver_col_map["full_text"])
+            insert_vals.append("source.full_text")
+        if has_full_text_source:
+            insert_cols.append(silver_col_map["full_text_source"])
+            insert_vals.append("source.full_text_source")
+        if has_full_text_extracted_at:
+            insert_cols.append(silver_col_map["full_text_extracted_at"])
+            insert_vals.append("CURRENT_TIMESTAMP()")
+        if has_tldr:
+            insert_cols.append(silver_col_map["tldr"])
+            insert_vals.append("source.tldr")
+
+        cur.execute(
+            f"""
+            MERGE INTO {silver_table} target
+            USING (
+                SELECT
+                    {", ".join(select_lines)}
+                FROM {bronze_table}
+                WHERE {payload_col}:entry_id::STRING LIKE %s
+                LIMIT 1
+            ) source
+            ON target.{silver_cols["arxiv_id"]} = source.arxiv_id
+                OR (target.{silver_cols["ss_id"]} = source.ss_id AND source.ss_id IS NOT NULL)
+            WHEN MATCHED THEN
+                UPDATE SET {", ".join(update_lines)}
+            WHEN NOT MATCHED THEN
+                INSERT ({", ".join(insert_cols)})
+                VALUES ({", ".join(insert_vals)})
+            """,
+            binds,
+        )
+
+        conn.commit()
+        print(f"Processed {arxiv_id} (SS_ID: {ss_id}) into Silver.")
+        return {"status": "ok", "arxiv_id": arxiv_id, "ss_id": ss_id}
     except Exception as e:
-        print(f"Error processing {arxiv_id}: {e}")
+        conn.rollback()
+        raise RuntimeError(f"Database Error for {arxiv_id}: {e}") from e
+    finally:
+        cur.close()
+        conn.close()
 
 
 # Provides a list of arxiv_ids in the bronze layer to be processed into silver
@@ -787,7 +830,7 @@ def main(parallel=1, database: str = DATABASE):
         return
 
     print("Prefetching Semantic Scholar metadata in batch...")
-    ss_prefetch = _fetch_ss_batch_metadata(ids_to_process, batch_size=100, relation_limit=10)
+    ss_prefetch = _fetch_ss_batch_metadata(ids_to_process, batch_size=100, relation_limit=100)
     print(f"Prefetched SS metadata for {len(ss_prefetch)} papers.")
 
     if(parallel == 1):
@@ -1016,3 +1059,21 @@ def backfill_conclusions_from_tldr(
     finally:
         cur.close()
         conn.close()
+
+@app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret])
+def process_single_silver(arxiv_id: str, database: str = DATABASE):
+    """
+    Orchestrator for a single paper, mirroring the logic in main().
+    """
+    print(f"Orchestrating Silver transform for: {arxiv_id}")
+    
+    # 1. Mirror the pre-fetch logic from your main()
+    ss_prefetch = _fetch_ss_batch_metadata([arxiv_id], batch_size=1, relation_limit=100)
+    
+    # 2. Execute the transform and bubble up failures to the API layer.
+    result = transform_to_silver.remote(
+        arxiv_id,
+        ss_prefetched=ss_prefetch.get(arxiv_id),
+        database=database,
+    )
+    return result

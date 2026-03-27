@@ -1,0 +1,177 @@
+======================================================================
+  PROFILE: build_knowledge_graph
+======================================================================
+         878719 function calls (847836 primitive calls) in 111.908 seconds
+
+   Ordered by: cumulative time
+   List reduced from 1726 to 10 due to restriction <10>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.000    0.000  107.669  107.669 /root/workers/graph_worker.py:88(_fetch_papers)
+        1  107.669  107.669  107.669  107.669 {method 'enable' of '_lsprof.Profiler' objects}
+        1    0.000    0.000    4.072    4.072 /root/utils.py:7(connect_to_snowflake)
+        1    0.000    0.000    4.072    4.072 /usr/local/lib/python3.10/site-packages/snowflake/connector/__init__.py:62(Connect)
+        1    0.000    0.000    4.072    4.072 /usr/local/lib/python3.10/site-packages/snowflake/connector/connection.py:574(__init__)
+        1    0.000    0.000    4.069    4.069 /usr/local/lib/python3.10/site-packages/snowflake/connector/connection.py:1111(connect)
+        1    0.000    0.000    4.068    4.068 /usr/local/lib/python3.10/site-packages/snowflake/connector/connection.py:1345(__open_connection)
+        1    0.000    0.000    4.068    4.068 /usr/local/lib/python3.10/site-packages/snowflake/connector/connection.py:1949(authenticate_with_retry)
+        1    0.000    0.000    4.068    4.068 /usr/local/lib/python3.10/site-packages/snowflake/connector/connection.py:1967(_authenticate)
+        1    0.000    0.000    4.068    4.068 /usr/local/lib/python3.10/site-packages/snowflake/connector/auth/_auth.py:169(authenticate)
+
+
+
+======================================================================
+  PROFILE: ingest_from_semantic_scholar
+======================================================================
+         133670 function calls (131348 primitive calls) in 4.559 seconds
+
+   Ordered by: cumulative time
+   List reduced from 1800 to 10 due to restriction <10>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+       13    0.001    0.000    3.586    0.276 /usr/local/lib/python3.10/site-packages/snowflake/connector/cursor.py:891(execute)
+       13    0.001    0.000    3.581    0.275 /usr/local/lib/python3.10/site-packages/snowflake/connector/cursor.py:611(_execute_helper)
+       13    0.000    0.000    3.572    0.275 /usr/local/lib/python3.10/site-packages/snowflake/connector/connection.py:1860(cmd_query)
+       13    0.000    0.000    3.568    0.274 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:435(request)
+       13    0.000    0.000    3.555    0.273 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:734(_post_request)
+       13    0.000    0.000    3.555    0.273 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:821(fetch)
+       13    0.000    0.000    3.552    0.273 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:892(_request_exec_wrapper)
+       13    0.001    0.000    3.550    0.273 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:1068(_request_exec)
+       13    0.000    0.000    3.546    0.273 /usr/local/lib/python3.10/site-packages/snowflake/connector/vendored/requests/sessions.py:500(request)
+       13    0.000    0.000    3.534    0.272 /usr/local/lib/python3.10/site-packages/snowflake/connector/vendored/requests/sessions.py:673(send)
+
+
+
+
+=====================================================================
+  PROFILE: _fetch_unembedded_from_silver
+======================================================================
+         10109 function calls (10063 primitive calls) in 0.308 seconds
+
+   Ordered by: cumulative time
+   List reduced from 687 to 10 due to restriction <10>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        2    0.000    0.000    0.308    0.154 /usr/local/lib/python3.10/site-packages/snowflake/connector/cursor.py:891(execute)
+        2    0.000    0.000    0.307    0.154 /usr/local/lib/python3.10/site-packages/snowflake/connector/cursor.py:611(_execute_helper)
+        2    0.000    0.000    0.307    0.153 /usr/local/lib/python3.10/site-packages/snowflake/connector/connection.py:1860(cmd_query)
+        2    0.000    0.000    0.306    0.153 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:435(request)
+        2    0.000    0.000    0.305    0.153 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:734(_post_request)
+        2    0.000    0.000    0.305    0.153 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:821(fetch)
+        2    0.000    0.000    0.305    0.152 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:892(_request_exec_wrapper)
+        2    0.000    0.000    0.305    0.152 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:1068(_request_exec)
+        2    0.000    0.000    0.304    0.152 /usr/local/lib/python3.10/site-packages/snowflake/connector/vendored/requests/sessions.py:500(request)
+        2    0.000    0.000    0.303    0.151 /usr/local/lib/python3.10/site-packages/snowflake/connector/vendored/requests/sessions.py:673(send)
+
+
+
+
+
+======================================================================
+  PROFILE: run_embedding_batch
+======================================================================
+         529819 function calls (509955 primitive calls) in 6.525 seconds
+
+   Ordered by: cumulative time
+   List reduced from 2827 to 10 due to restriction <10>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+       46    0.001    0.000    3.957    0.086 /usr/local/lib/python3.10/http/client.py:1331(getresponse)
+       46    0.001    0.000    3.955    0.086 /usr/local/lib/python3.10/http/client.py:311(begin)
+       87    0.000    0.000    3.938    0.045 /usr/local/lib/python3.10/socket.py:703(readinto)
+     1207    0.001    0.000    3.936    0.003 {method 'readline' of '_io.BufferedReader' objects}
+       46    0.001    0.000    3.935    0.086 /usr/local/lib/python3.10/http/client.py:278(_read_status)
+       10    0.001    0.000    3.273    0.327 /usr/local/lib/python3.10/site-packages/snowflake/connector/cursor.py:891(execute)
+       10    0.001    0.000    3.269    0.327 /usr/local/lib/python3.10/site-packages/snowflake/connector/cursor.py:611(_execute_helper)
+       10    0.000    0.000    3.265    0.327 /usr/local/lib/python3.10/site-packages/snowflake/connector/connection.py:1860(cmd_query)
+       10    0.000    0.000    3.263    0.326 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:435(request)
+       10    0.000    0.000    3.257    0.326 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:734(_post_request)
+
+
+
+
+======================================================================
+  PROFILE: _fetch_unchunked_papers
+======================================================================
+         15749 function calls (15678 primitive calls) in 1.399 seconds
+
+   Ordered by: cumulative time
+   List reduced from 732 to 10 due to restriction <10>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        3    0.000    0.000    0.842    0.281 /usr/local/lib/python3.10/site-packages/snowflake/connector/cursor.py:891(execute)
+        3    0.000    0.000    0.841    0.280 /usr/local/lib/python3.10/site-packages/snowflake/connector/cursor.py:611(_execute_helper)
+        3    0.000    0.000    0.840    0.280 /usr/local/lib/python3.10/site-packages/snowflake/connector/connection.py:1860(cmd_query)
+        3    0.000    0.000    0.839    0.280 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:435(request)
+        3    0.000    0.000    0.838    0.279 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:734(_post_request)
+        3    0.000    0.000    0.838    0.279 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:821(fetch)
+        3    0.000    0.000    0.837    0.279 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:892(_request_exec_wrapper)
+        3    0.000    0.000    0.837    0.279 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:1068(_request_exec)
+        3    0.000    0.000    0.835    0.278 /usr/local/lib/python3.10/site-packages/snowflake/connector/vendored/requests/sessions.py:500(request)
+        3    0.000    0.000    0.832    0.277 /usr/local/lib/python3.10/site-packages/snowflake/connector/vendored/requests/sessions.py:673(send)
+
+
+
+
+======================================================================
+  PROFILE: chunk_papers
+======================================================================
+         4625 function calls (4604 primitive calls) in 73.056 seconds
+
+   Ordered by: cumulative time
+   List reduced from 626 to 10 due to restriction <10>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.000    0.000   72.913   72.913 /root/workers/chunking_worker.py:213(_fetch_unchunked_papers)
+        1   72.913   72.913   72.913   72.913 {method 'enable' of '_lsprof.Profiler' objects}
+        1    0.000    0.000    0.143    0.143 /usr/local/lib/python3.10/site-packages/snowflake/connector/cursor.py:891(execute)
+        1    0.000    0.000    0.143    0.143 /usr/local/lib/python3.10/site-packages/snowflake/connector/cursor.py:611(_execute_helper)
+        1    0.000    0.000    0.143    0.143 /usr/local/lib/python3.10/site-packages/snowflake/connector/connection.py:1860(cmd_query)
+        1    0.000    0.000    0.142    0.142 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:435(request)
+        1    0.000    0.000    0.142    0.142 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:734(_post_request)
+        1    0.000    0.000    0.142    0.142 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:821(fetch)
+        1    0.000    0.000    0.142    0.142 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:892(_request_exec_wrapper)
+        1    0.000    0.000    0.141    0.141 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:1068(_request_exec)
+
+=====================================================================
+  PROFILE: run_chunk_embedding_batch
+======================================================================
+         969178 function calls (947583 primitive calls) in 45.173 seconds
+
+   Ordered by: cumulative time
+   List reduced from 2814 to 10 due to restriction <10>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+      197    0.001    0.000   35.978    0.183 /usr/local/lib/python3.10/socket.py:703(readinto)
+       98    0.001    0.000   35.974    0.367 /usr/local/lib/python3.10/http/client.py:1331(getresponse)
+       98    0.002    0.000   35.968    0.367 /usr/local/lib/python3.10/http/client.py:311(begin)
+     2439    0.002    0.000   35.938    0.015 {method 'readline' of '_io.BufferedReader' objects}
+       98    0.002    0.000   35.925    0.367 /usr/local/lib/python3.10/http/client.py:278(_read_status)
+       62    0.007    0.000   34.196    0.552 /usr/local/lib/python3.10/site-packages/snowflake/connector/cursor.py:891(execute)
+       62    0.005    0.000   34.170    0.551 /usr/local/lib/python3.10/site-packages/snowflake/connector/cursor.py:611(_execute_helper)
+       62    0.001    0.000   34.147    0.551 /usr/local/lib/python3.10/site-packages/snowflake/connector/connection.py:1860(cmd_query)
+       62    0.002    0.000   34.132    0.551 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:435(request)
+       62    0.001    0.000   34.093    0.550 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:734(_post_request)
+
+
+
+
+======================================================================
+  PROFILE: _compute_topk_in_snowflake (pid=6)
+======================================================================
+         9888 function calls (9845 primitive calls) in 0.376 seconds
+
+   Ordered by: cumulative time
+   List reduced from 681 to 10 due to restriction <10>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        2    0.000    0.000    0.375    0.188 /usr/local/lib/python3.10/site-packages/snowflake/connector/cursor.py:891(execute)
+        2    0.000    0.000    0.375    0.187 /usr/local/lib/python3.10/site-packages/snowflake/connector/cursor.py:611(_execute_helper)
+        2    0.000    0.000    0.373    0.187 /usr/local/lib/python3.10/site-packages/snowflake/connector/connection.py:1860(cmd_query)
+        2    0.000    0.000    0.373    0.186 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:435(request)
+        2    0.000    0.000    0.371    0.186 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:734(_post_request)
+        2    0.000    0.000    0.371    0.186 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:821(fetch)
+        2    0.000    0.000    0.371    0.185 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:892(_request_exec_wrapper)
+        2    0.000    0.000    0.370    0.185 /usr/local/lib/python3.10/site-packages/snowflake/connector/network.py:1068(_request_exec)
+        2    0.000    0.000    0.370    0.185 /usr/local/lib/python3.10/site-packages/snowflake/connector/vendored/requests/sessions.py:500(request)
+        2    0.000    0.000    0.351    0.176 /usr/local/lib/python3.10/site-packages/snowflake/connector/vendored/requests/sessions.py:673(send)

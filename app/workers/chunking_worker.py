@@ -5,8 +5,8 @@ from typing import List, Dict, Any, Optional
 import logging
 import re
 
-from utils import connect_to_snowflake
-from config import app, image, snowflake_secret, DATABASE, qualify_table
+from app.utils import connect_to_snowflake
+from app.config import app, image, snowflake_secret, DATABASE, qualify_table
 
 WORDS_PER_CHUNK = 500
 WORDS_PER_CHUNK_MAX = 800

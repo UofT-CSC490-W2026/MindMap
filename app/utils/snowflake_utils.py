@@ -10,3 +10,5 @@ def _connect_snowflake():
         database='MINDMAP_DB', warehouse='MINDMAP_WH',
         schema='PUBLIC'
     )
+# public alias for workers
+connect_snowflake = _connect_snowflake

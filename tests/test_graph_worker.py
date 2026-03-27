@@ -88,6 +88,16 @@ def test_fetch_papers_with_specific_paper_id():
     assert result == [(1, "[]", "[]", "Conclusion")]
 
 
+def test_fetch_papers_raises_when_conclusion_column_missing():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        ("ID",), ("CITATION_LIST",), ("SIMILAR_EMBEDDINGS_IDS",),
+    ]
+
+    with pytest.raises(RuntimeError, match="Missing required columns"):
+        _fetch_papers(mock_cursor, paper_id=None)
+
+
 # ---------------------------------------------------------------------------
 # _dedupe_edges
 # ---------------------------------------------------------------------------
@@ -342,6 +352,37 @@ def test_build_knowledge_graph_skips_classifier_for_existing_semantic_edge():
 
     assert result["edges_merged"] == 1
     classifier.classify.map.assert_not_called()
+
+
+def test_build_knowledge_graph_ignores_invalid_similar_ids():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("SOURCE_PAPER_ID",), ("TARGET_PAPER_ID",), ("RELATIONSHIP_TYPE",), ("STRENGTH",), ("REASON",)],
+        [],
+        [("ID",), ("CITATION_LIST",), ("SIMILAR_EMBEDDINGS_IDS",), ("CONCLUSION",)],
+        [(1, None, '["bad", null, 2]', "Source conclusion")],
+        [("ID",), ("CONCLUSION",)],
+    ]
+    mock_cursor.fetchone.return_value = None
+    mock_cursor.execute.return_value = None
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    captured = {}
+
+    def fake_merge(cur, edges, database="DB"):
+        captured["edges"] = edges
+        return len(edges)
+
+    with patch("workers.graph_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("workers.graph_worker.RelationshipClassifier", return_value=MagicMock()):
+            with patch("workers.graph_worker._bulk_merge_edges", side_effect=fake_merge):
+                result = build_knowledge_graph(paper_id=None)
+
+    assert result["edges_merged"] == 1
+    assert captured["edges"][0][:3] == (1, 2, "SIMILAR")
 
 
 def test_run_topic_clustering_success():

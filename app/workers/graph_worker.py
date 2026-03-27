@@ -1,5 +1,31 @@
 """
 Build Gold layer relationships (citations + similarity) from Silver layer.
+
+Test coverage notes for Part Four:
+- `tests/test_graph_worker.py::test_normalize_json_list_none`,
+  `test_normalize_json_list_invalid_string`, and `test_normalize_ids_mixed`
+  cover malformed or partially invalid relationship payloads. These are
+  important because citation/similarity data can arrive as `None`, bad JSON,
+  or mixed-type lists from upstream workers or Snowflake.
+- `tests/test_graph_worker.py::test_require_columns_raises` and
+  `test_fetch_papers_raises_when_conclusion_column_missing` cover schema
+  failure modes. The graph build depends on a fixed set of Snowflake columns,
+  so these tests ensure the worker fails fast with a clear error instead of
+  silently producing incomplete graph edges.
+- `tests/test_graph_worker.py::test_dedupe_edges_removes_duplicates`,
+  `test_dedupe_edges_removes_self_loops`, and
+  `test_build_knowledge_graph_ignores_invalid_similar_ids` protect graph
+  integrity by checking that duplicate links, self-references, and invalid
+  similar-paper ids do not create bad rows in the Gold layer.
+- `tests/test_graph_worker.py::test_build_knowledge_graph_empty`,
+  `test_build_knowledge_graph_adds_citation_edges`,
+  `test_build_knowledge_graph_runs_classifier_for_new_semantic_edges`, and
+  `test_build_knowledge_graph_skips_classifier_for_existing_semantic_edge`
+  cover the main control-flow branches: empty inputs, normal edge creation,
+  expensive classifier calls, and the optimization that skips recomputation.
+- `tests/test_graph_worker.py::test_run_topic_clustering_no_embeddings` and
+  `test_run_topic_clustering_success` cover both graceful early exit and the
+  normal clustering path for downstream topic labels.
 """
 import cProfile
 import io
@@ -102,6 +128,9 @@ def _fetch_papers(cur, paper_id: Optional[int], database: str = DATABASE) -> Lis
 
     silver = _silver_table(database=database)
     col_map = _resolve_table_columns(cur, silver)
+    # Conclusion is required because semantic edge classification compares
+    # paper conclusions. The related tests cover both the happy path and the
+    # missing-column failure mode.
     cols = _require_columns(
         col_map,
         ["id", "similar_embeddings_ids", "conclusion"],
@@ -137,6 +166,8 @@ def _fetch_papers(cur, paper_id: Optional[int], database: str = DATABASE) -> Lis
     return cur.fetchall()
 
 def _normalize_json_list(value) -> list:
+    # Upstream data can be None, invalid JSON, or already parsed. Returning an
+    # empty list on bad inputs lets the graph build degrade gracefully.
     if value is None:
         return []
     if isinstance(value, str):
@@ -162,6 +193,8 @@ def _citation_targets(cur, citations: Iterable[dict], database: str = DATABASE) 
     arxiv_ids: List[str] = []
     dois: List[str] = []
     for citation in citations:
+        # Citation payloads may contain malformed entries; ignore them rather
+        # than crashing the full graph build for one bad citation.
         if not isinstance(citation, dict):
             continue
         ss_id = citation.get("ss_paper_id")
@@ -254,6 +287,8 @@ def _dedupe_edges(edges: Iterable[Tuple]) -> List[Tuple]:
     for edge in edges:
         source_id, target_id, rel_type, strength = edge[0], edge[1], edge[2], edge[3]
         reason = edge[4] if len(edge) > 4 else None
+        # Self loops and duplicate edges make the graph noisy and can distort
+        # later analytics, so the tests explicitly verify they are removed.
         if source_id == target_id:
             continue
         key = (int(source_id), int(target_id), rel_type)
@@ -435,6 +470,9 @@ def build_knowledge_graph(paper_id: int = None, database: str = DATABASE):
                 silver,
             )
             for idx, target_id in enumerate(sim_ids[:3]):
+                # Existing semantic edges are skipped to avoid unnecessary LLM
+                # calls. This branch is covered by tests for both "call" and
+                # "skip" behavior.
                 if any((int(pid), target_id, lbl) in existing_edges for lbl in ["SUPPORT", "CONTRADICT", "NEUTRAL"]):
                     print(f"Skipping classifier for paper {pid} vs {target_id} (edge already exists)")
                     continue

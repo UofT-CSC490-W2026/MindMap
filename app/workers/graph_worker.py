@@ -1,12 +1,30 @@
 """
 Build Gold layer relationships (citations + similarity) from Silver layer.
 """
+import cProfile
+import io
 import json
+import pstats
 from typing import Iterable, List, Optional, Tuple
 
 from config import app, image, snowflake_secret, DATABASE, qualify_table
 from config import clustering_image, llm_image, openai_secret
 from utils import connect_to_snowflake
+
+_PROFILE_LOG = "/tmp/profile_output.txt"
+
+
+def _write_profile(label: str, profiler: cProfile.Profile, top_n: int = 10) -> None:
+    """Print cProfile stats to stdout so Modal streams them to the terminal."""
+    s = io.StringIO()
+    pstats.Stats(profiler, stream=s).sort_stats("cumulative").print_stats(top_n)
+    output = (
+        f"\n{'=' * 70}\n"
+        f"  PROFILE: {label}\n"
+        f"{'=' * 70}\n"
+        + s.getvalue()
+    )
+    print(output)
 
 
 def _silver_table(database: str = DATABASE) -> str:
@@ -68,6 +86,13 @@ def _require_columns(column_map: dict[str, str], required: list[str], table_name
 #     return cur.fetchall()
 
 def _fetch_papers(cur, paper_id: Optional[int], database: str = DATABASE) -> List[Tuple]:
+    # Profiled because: DESC TABLE is called to resolve column names on every
+    # invocation, then the SELECT pulls conclusion text for every paper —
+    # fetching large text columns for the full corpus is the heaviest query
+    # in build_knowledge_graph before any edge logic runs.
+    profiler = cProfile.Profile()
+    profiler.enable()
+
     silver = _silver_table(database=database)
     # Added "conclusion" to the required columns list
     cols = _require_columns(
@@ -83,8 +108,13 @@ def _fetch_papers(cur, paper_id: Optional[int], database: str = DATABASE) -> Lis
         cur.execute(f"{query} WHERE {cols['id']} = %s", (int(paper_id),))
     else:
         cur.execute(f"{query} WHERE {cols['citation_list']} IS NOT NULL OR {cols['similar_embeddings_ids']} IS NOT NULL")
-        
-    return cur.fetchall()
+    
+    result = cur.fetchall()
+
+    profiler.disable()
+    _write_profile("_fetch_papers", profiler)
+
+    return result
 
 def _normalize_json_list(value) -> list:
     if value is None:
@@ -233,6 +263,9 @@ def build_knowledge_graph(paper_id: int = None, database: str = DATABASE):
     Populate Gold layer with citation and semantic similarity relationships.
     If paper_id is None, process all papers with cached relationships.
     """
+    profiler = cProfile.Profile()
+    profiler.enable()
+
     # Connect to Snowflake GOLD schema
     conn = connect_to_snowflake(database=database, schema="GOLD")
     cur = conn.cursor()
@@ -310,6 +343,10 @@ def build_knowledge_graph(paper_id: int = None, database: str = DATABASE):
         merged_count = _bulk_merge_edges(cur, _dedupe_edges(edges), database=database)
         print(f"Graph build complete. Total edges merged into GOLD: {merged_count}")
         conn.commit()
+
+        profiler.disable()
+        _write_profile("build_knowledge_graph", profiler)
+
         # Return summary statistics
         return {"papers_processed": len(papers), "edges_merged": merged_count}
     finally:

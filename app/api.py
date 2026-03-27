@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import modal
+import asyncio
 from typing import Any, Dict, List
 
 import httpx
@@ -17,7 +18,8 @@ from pydantic import BaseModel, Field
 
 from app.utils import connect_to_snowflake
 from app.config import DATABASE, qualify_table
-from app.jobs import run_single_ingestion_job
+from app.jobs import run_post_bronze_job
+from app.workers.ingestion import ingest_single_paper
 
 
 api = FastAPI(title="MindMap API", version="0.1.0")
@@ -37,20 +39,55 @@ async def get_papers():
     try:
         silver_table = qualify_table("SILVER_PAPERS", database=DATABASE)
         bronze_table = qualify_table("BRONZE_PAPERS", database=DATABASE)
-        cur.execute("""
-            SELECT 
-                p."id",
-                p."title",
-                p."abstract",
-                p."arxiv_id",
-                b."raw_payload",
-                b."raw_payload":citationCount::INT AS citation_count,
-                b."raw_payload":year::INT AS year
-            FROM {silver_table} p
-            LEFT JOIN {bronze_table} b
-              ON b."raw_payload":entry_id::STRING = CONCAT('https://arxiv.org/abs/', p."arxiv_id")
-            LIMIT 100
-        """.format(silver_table=silver_table, bronze_table=bronze_table))
+        clusters_table = qualify_table("GOLD_PAPER_CLUSTERS", database=DATABASE)
+        cur.execute(f"SHOW TABLES LIKE 'GOLD_PAPER_CLUSTERS' IN SCHEMA {DATABASE}.GOLD")
+        has_clusters_table = cur.fetchone() is not None
+
+        if has_clusters_table:
+            cur.execute("""
+                SELECT 
+                    p."id",
+                    p."title",
+                    p."abstract",
+                    p."arxiv_id",
+                    b."raw_payload",
+                    b."raw_payload":citationCount::INT AS citation_count,
+                    b."raw_payload":year::INT AS year,
+                    c."cluster_id",
+                    c."cluster_name",
+                    c."cluster_description"
+                FROM {silver_table} p
+                LEFT JOIN {bronze_table} b
+                  ON b."raw_payload":entry_id::STRING = CONCAT('https://arxiv.org/abs/', p."arxiv_id")
+                LEFT JOIN {clusters_table} c
+                  ON c."paper_id" = p."id"
+                LIMIT 100
+            """.format(
+                silver_table=silver_table,
+                bronze_table=bronze_table,
+                clusters_table=clusters_table,
+            ))
+        else:
+            cur.execute("""
+                SELECT 
+                    p."id",
+                    p."title",
+                    p."abstract",
+                    p."arxiv_id",
+                    b."raw_payload",
+                    b."raw_payload":citationCount::INT AS citation_count,
+                    b."raw_payload":year::INT AS year,
+                    NULL AS "cluster_id",
+                    NULL AS "cluster_name",
+                    NULL AS "cluster_description"
+                FROM {silver_table} p
+                LEFT JOIN {bronze_table} b
+                  ON b."raw_payload":entry_id::STRING = CONCAT('https://arxiv.org/abs/', p."arxiv_id")
+                LIMIT 100
+            """.format(
+                silver_table=silver_table,
+                bronze_table=bronze_table,
+            ))
         rows = cur.fetchall()
         papers = []
         for r in rows:
@@ -90,6 +127,9 @@ async def get_papers():
                 "year": year,
                 "citations": citations,
                 "primaryTopic": "ML",
+                "clusterId": int(r[7]) if r[7] is not None else None,
+                "clusterName": r[8],
+                "clusterDescription": r[9],
                 "searchText": r[1] or ""
             })
         return papers
@@ -104,25 +144,33 @@ async def get_relationships():
     cur = conn.cursor()
     try:
         gold_table = qualify_table("GOLD_CONNECTIONS", database=DATABASE)
+        cur.execute(f"DESC TABLE {gold_table}")
+        columns = {str(row[0]).lower() for row in cur.fetchall() if row and row[0]}
+        has_reason = "reason" in columns
+
+        reason_select = ', "reason"' if has_reason else ""
         cur.execute("""
             SELECT 
                 "source_paper_id",
                 "target_paper_id",
                 "relationship_type",
                 "strength"
+                {reason_select}
             FROM {gold_table}
             LIMIT 200
-        """.format(gold_table=gold_table))
+        """.format(gold_table=gold_table, reason_select=reason_select))
         rows = cur.fetchall()
 
         relationships = []
         for r in rows:
-            rel_type = str(r[2]) if r[2] in ("CITES", "SIMILAR") else "SIMILAR"
+            rel_type = str(r[2]) if r[2] else "SIMILAR"
+            reason = r[4] if has_reason else None
             relationships.append({
                 "source_paper_id": int(r[0]),
                 "target_paper_id": int(r[1]),
                 "relationship_type": rel_type,
-                "strength": float(r[3]) if r[3] else 0.5
+                "strength": float(r[3]) if r[3] else 0.5,
+                "reason": reason,
             })
         return relationships
     finally:
@@ -138,10 +186,54 @@ async def search_papers(query: str, limit: int = 3):
         "limit": limit,
         "fields": "title,authors,year,citationCount,externalIds"
     }
-    headers = {"x-api-key": os.environ["SEMANTIC_SCHOLAR_API_KEY"]}
+    api_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
+    headers = {"x-api-key": api_key} if api_key else None
+
+    # Retry transient/rate-limit responses and degrade gracefully to avoid frontend 500s.
+    max_attempts = 3
+    retry_delays = [0.6, 1.2]
     async with httpx.AsyncClient(timeout=30.0) as client:
-        res = await client.get(url, params=params, headers=headers)
-        return res.json()
+        for attempt in range(max_attempts):
+            try:
+                res = await client.get(url, params=params, headers=headers)
+            except httpx.HTTPError as exc:
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(retry_delays[attempt])
+                    continue
+                return {
+                    "data": [],
+                    "rate_limited": False,
+                    "upstream_error": str(exc),
+                }
+
+            if res.status_code == 429:
+                if attempt < max_attempts - 1:
+                    retry_after = res.headers.get("Retry-After")
+                    try:
+                        wait_s = float(retry_after) if retry_after is not None else retry_delays[attempt]
+                    except (TypeError, ValueError):
+                        wait_s = retry_delays[attempt]
+                    await asyncio.sleep(max(0.0, wait_s))
+                    continue
+                return {
+                    "data": [],
+                    "rate_limited": True,
+                }
+
+            if res.status_code >= 500 and attempt < max_attempts - 1:
+                await asyncio.sleep(retry_delays[attempt])
+                continue
+
+            if res.is_error:
+                return {
+                    "data": [],
+                    "rate_limited": False,
+                    "upstream_status": res.status_code,
+                }
+
+            return res.json()
+
+    return {"data": [], "rate_limited": False}
 
 
 @api.post("/papers/ingest")
@@ -149,11 +241,30 @@ async def ingest_paper(body: dict):
     arxiv_id = body.get("arxiv_id")
     if not arxiv_id:
         raise HTTPException(status_code=400, detail="Missing required field: arxiv_id")
-    call = await run_single_ingestion_job.spawn.aio(arxiv_id=arxiv_id, database=DATABASE)
+
+    # Run Bronze synchronously so the UI can confirm "Added" as soon as Bronze succeeds.
+    try:
+        bronze_result = await ingest_single_paper.remote.aio(arxiv_id=arxiv_id, database=DATABASE)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Bronze ingestion failed: {exc}") from exc
+
+    bronze_status = bronze_result.get("status") if isinstance(bronze_result, dict) else "failed"
+    if bronze_status not in {"ok", "skipped"}:
+        return {
+            "status": "failed",
+            "stage": "bronze",
+            "database": DATABASE,
+            "bronze_result": bronze_result,
+        }
+
+    # Continue remaining stages asynchronously.
+    call = await run_post_bronze_job.spawn.aio(arxiv_id=arxiv_id, database=DATABASE)
     return {
         "job_id": call.object_id,
-        "status": "pending",
-        "stage": "queued",
+        "status": "processing",
+        "stage": "bronze",
+        "bronze_status": bronze_status,
+        "bronze_result": bronze_result,
         "database": DATABASE,
     }
 
@@ -220,6 +331,23 @@ def _fetch_papers_by_ids(paper_ids: List[str]) -> List[Dict[str, Any]]:
 @api.get("/health")
 def health() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+@api.post("/clusters/rebuild")
+async def rebuild_clusters(n_clusters: int = Query(default=5, ge=2, le=20)):
+    """
+    Run topic clustering for the current graph and persist cluster assignments.
+    """
+    try:
+        from app.workers.graph_worker import run_topic_clustering
+
+        result = await run_topic_clustering.remote.aio(
+            n_clusters=n_clusters,
+            database=DATABASE,
+        )
+        return {"status": "ok", "database": DATABASE, "result": result}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Cluster rebuild failed: {exc}") from exc
 
 
 @api.post("/api/pipeline/run")

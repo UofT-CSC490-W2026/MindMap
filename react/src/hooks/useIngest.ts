@@ -16,11 +16,22 @@ export function useIngest() {
     setError(null)
     setStatus('submitting')
     try {
-      const { job_id } = await ingestPaper(arxivInput)
+      const ingest = await ingestPaper(arxivInput)
+      if (ingest.status === 'failed') {
+        setStatus('failed')
+        setError(ingest.error ?? 'Bronze ingestion failed')
+        return
+      }
+      if (!ingest.job_id) {
+        setStatus('failed')
+        setError('Missing job id from ingest response')
+        return
+      }
+      const jobId = ingest.job_id
       setStatus('pending')
       pollRef.current = setInterval(async () => {
         try {
-          const res = await getPaperStatus(job_id)
+          const res = await getPaperStatus(jobId)
           setStatus(res.status)
           if (res.status === 'done' || res.status === 'failed') {
             stopPolling()

@@ -1,16 +1,51 @@
 [
-  { "source_paper_id": 1, "target_paper_id": 2, "relationship_type": "CITES", "strength": 0.95 },
-  { "source_paper_id": 1, "target_paper_id": 3, "relationship_type": "SIMILAR", "strength": 0.87 },
-  { "source_paper_id": 1, "target_paper_id": 6, "relationship_type": "CITES", "strength": 0.70 },
-  { "source_paper_id": 2, "target_paper_id": 4, "relationship_type": "CITES", "strength": 0.78 },
-  { "source_paper_id": 2, "target_paper_id": 5, "relationship_type": "SIMILAR", "strength": 0.69 },
-  { "source_paper_id": 2, "target_paper_id": 6, "relationship_type": "CITES", "strength": 0.80 },
-  { "source_paper_id": 3, "target_paper_id": 4, "relationship_type": "SIMILAR", "strength": 0.82 },
-  { "source_paper_id": 3, "target_paper_id": 5, "relationship_type": "CITES", "strength": 0.75 },
-  { "source_paper_id": 4, "target_paper_id": 5, "relationship_type": "CITES", "strength": 0.91 },
-  { "source_paper_id": 6, "target_paper_id": 8, "relationship_type": "CITES", "strength": 0.85 },
-  { "source_paper_id": 7, "target_paper_id": 8, "relationship_type": "CITES", "strength": 0.90 },
-  { "source_paper_id": 9, "target_paper_id": 10, "relationship_type": "SIMILAR", "strength": 0.60 },
-  { "source_paper_id": 10, "target_paper_id": 2, "relationship_type": "CITES", "strength": 0.88 },
-  { "source_paper_id": 10, "target_paper_id": 1, "relationship_type": "CITES", "strength": 0.72 }
+  { "source_paper_id": 101, "target_paper_id": 2,   "relationship_type": "CITES",   "strength": 1.0 },
+  { "source_paper_id": 101, "target_paper_id": 401,  "relationship_type": "CITES",   "strength": 1.0 },
+  { "source_paper_id": 102, "target_paper_id": 2,    "relationship_type": "CITES",   "strength": 1.0 },
+  { "source_paper_id": 201, "target_paper_id": 101,  "relationship_type": "CITES",   "strength": 1.0 },
+  { "source_paper_id": 201, "target_paper_id": 102,  "relationship_type": "CITES",   "strength": 1.0 },
+  { "source_paper_id": 202, "target_paper_id": 201,  "relationship_type": "CITES",   "strength": 1.0 },
+  { "source_paper_id": 202, "target_paper_id": 101,  "relationship_type": "CITES",   "strength": 1.0 },
+  { "source_paper_id": 301, "target_paper_id": 2,    "relationship_type": "CITES",   "strength": 1.0 },
+  { "source_paper_id": 302, "target_paper_id": 301,  "relationship_type": "CITES",   "strength": 1.0 },
+  { "source_paper_id": 401, "target_paper_id": 2,    "relationship_type": "CITES",   "strength": 1.0 },
+  { "source_paper_id": 402, "target_paper_id": 401,  "relationship_type": "CITES",   "strength": 1.0 },
+  { "source_paper_id": 403, "target_paper_id": 2,    "relationship_type": "CITES",   "strength": 1.0 },
+  { "source_paper_id": 101, "target_paper_id": 102,  "relationship_type": "SIMILAR", "strength": 1.0 },
+  { "source_paper_id": 101, "target_paper_id": 201,  "relationship_type": "SIMILAR", "strength": 0.9 },
+  { "source_paper_id": 102, "target_paper_id": 201,  "relationship_type": "SIMILAR", "strength": 0.9 },
+  { "source_paper_id": 201, "target_paper_id": 202,  "relationship_type": "SIMILAR", "strength": 1.0 },
+  { "source_paper_id": 301, "target_paper_id": 302,  "relationship_type": "SIMILAR", "strength": 1.0 },
+  { "source_paper_id": 401, "target_paper_id": 402,  "relationship_type": "SIMILAR", "strength": 0.9 },
+  { "source_paper_id": 2,   "target_paper_id": 101,  "relationship_type": "SIMILAR", "strength": 0.8 },
+  {
+    "source_paper_id": 201, "target_paper_id": 202,
+    "relationship_type": "SUPPORT", "strength": 1.0,
+    "reason": "Both papers support the finding that migrating quantization difficulty from activations to weights improves accuracy, with AWQ extending SmoothQuant's activation-smoothing insight to a hardware-friendly weight-only scheme."
+  },
+  {
+    "source_paper_id": 101, "target_paper_id": 102,
+    "relationship_type": "SUPPORT", "strength": 1.0,
+    "reason": "GPTQ and LLM.int8() both demonstrate that sub-8-bit post-training quantization of LLMs is feasible without retraining, supporting the broader claim that PTQ can match fine-tuned baselines at scale."
+  },
+  {
+    "source_paper_id": 301, "target_paper_id": 401,
+    "relationship_type": "CONTRADICT", "strength": 1.0,
+    "reason": "Q-Diffusion finds that uniform quantization schedules used in transformer-focused methods like ZeroQuant degrade diffusion model quality significantly, contradicting the assumption that a single quantization strategy generalizes across architectures."
+  },
+  {
+    "source_paper_id": 402, "target_paper_id": 101,
+    "relationship_type": "NEUTRAL", "strength": 1.0,
+    "reason": "MQBench and GPTQ address different problem settings — MQBench focuses on reproducible benchmarking of quantization-aware training pipelines, while GPTQ targets one-shot post-training quantization for generative models. Their findings neither reinforce nor contradict each other."
+  },
+  {
+    "source_paper_id": 403, "target_paper_id": 302,
+    "relationship_type": "NEUTRAL", "strength": 1.0,
+    "reason": "The adversarial quantization attack paper and EfficientDiffusion operate in entirely separate problem domains — one studies robustness under quantization, the other studies generation quality. No direct agreement or disagreement exists between their conclusions."
+  },
+  {
+    "source_paper_id": 2, "target_paper_id": 401,
+    "relationship_type": "NEUTRAL", "strength": 0.9,
+    "reason": "The quantization survey provides a broad taxonomy of methods including hardware-aware approaches, but does not make specific empirical claims that ZeroQuant's results either confirm or challenge."
+  }
 ]

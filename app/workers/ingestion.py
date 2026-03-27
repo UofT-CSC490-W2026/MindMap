@@ -1,3 +1,4 @@
+import requests
 import json
 import re
 import threading
@@ -15,6 +16,26 @@ _ss_last_request_ts = 0.0
 
 def _bronze_papers_table(database: str = DATABASE) -> str:
     return qualify_table("BRONZE_PAPERS", database=database)
+
+
+def _quote_ident(identifier: str) -> str:
+    escaped = str(identifier).replace('"', '""')
+    return f'"{escaped}"'
+
+
+def _resolve_bronze_payload_column(cur, bronze_table: str) -> str:
+    """Return the exact SQL identifier for the Bronze payload column."""
+    cur.execute(f"DESC TABLE {bronze_table}")
+    columns = [row[0] for row in cur.fetchall() if row and row[0]]
+
+    for name in columns:
+        if str(name).lower() == "raw_payload":
+            return _quote_ident(str(name))
+
+    raise RuntimeError(
+        f"Could not find raw payload column in {bronze_table}. "
+        f"Columns found: {columns}"
+    )
 
 
 def _extract_arxiv_id(external_ids: dict) -> str | None:
@@ -67,11 +88,112 @@ def _ss_get_json(url: str, params: dict, timeout: float = 30.0) -> dict:
             print("Semantic Scholar key rejected after retry; falling back to unauthenticated access.")
             response = _request(None)
 
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        # Raise a plain exception so Modal can always deserialize it locally.
+        status = exc.response.status_code if exc.response is not None else "unknown"
+        body = ""
+        if exc.response is not None:
+            body = (exc.response.text or "")[:400]
+        raise RuntimeError(
+            f"Semantic Scholar request failed (status={status}) for url={url} params={params}. "
+            f"Response body: {body}"
+        ) from None
+
     return response.json()
 
 
 # Credentials should be stored in a Modal Secret
+
+@app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret])
+def ingest_from_openalex(query: str, max_results: int = 25, database: str = DATABASE):
+    """
+    Step 1: Ingestion to Bronze Layer using OpenAlex search.
+    Only inserts papers that don't already exist by entry_id.
+    """
+    bronze_table = _bronze_papers_table(database=database)
+    print("Using bronze_table:", bronze_table)
+    url = "https://api.openalex.org/works"
+    params = {
+        "search": query,
+        "per-page": int(max_results),
+        "mailto": "your-email@example.com"  # Replace with your email for OpenAlex API etiquette
+    }
+
+    conn = connect_to_snowflake(database=database, schema="BRONZE")
+    cur = conn.cursor()
+
+    inserted = 0
+    skipped_dupe = 0
+    skipped_no_id = 0
+
+    try:
+        response = requests.get(url, params=params, timeout=30.0)
+        response.raise_for_status()
+        data = response.json().get("results", [])
+
+        # Print all possible properties (keys) for each paper
+        # print("\n--- OpenAlex Paper Properties (keys) ---")
+        # for idx, paper in enumerate(data):
+        #     print(f"Paper {idx+1} keys: {sorted(list(paper.keys()))}")
+        # print("--- End of Paper Properties ---\n")
+
+        for paper in data:
+            openalex_id = paper.get("id")
+            if not openalex_id:
+                skipped_no_id += 1
+                continue
+
+            # Use OpenAlex ID as entry_id
+            entry_id = openalex_id
+
+            cur.execute(
+                f'SELECT 1 FROM {bronze_table} WHERE "raw_payload":entry_id::STRING = %s LIMIT 1',
+                (entry_id,)
+            )
+            if cur.fetchone():
+                skipped_dupe += 1
+                continue
+
+            authors = [a.get("author", {}).get("display_name") for a in (paper.get("authorships") or []) if a.get("author", {}).get("display_name")]
+
+            raw_data = {
+                "source": "openalex",
+                "entry_id": entry_id,
+                "openalex_id": openalex_id,
+                "title": paper.get("title"),
+                "authors": authors,
+                "summary": paper.get("abstract_inverted_index"),
+                "publication_date": paper.get("publication_date"),
+                "doi": paper.get("doi"),
+                "primary_location": (paper.get("primary_location") or {}).get("source", {}).get("display_name"),
+                "pdf_url": (paper.get("primary_location") or {}).get("url"),
+                "external_ids": paper.get("ids"),
+                "cited_by_count": paper.get("cited_by_count"),
+                "referenced_works": paper.get("referenced_works"),
+                "related_works": paper.get("related_works"),
+            }
+
+            print(f"Ingested paper: {raw_data['title']} ({raw_data['publication_date']}), Authors: {raw_data['authors']}")
+            print(f"ids: {raw_data['external_ids']}")
+
+            cur.execute(
+                f'INSERT INTO {bronze_table} ("raw_payload") SELECT PARSE_JSON(%s)',
+                (json.dumps(raw_data),)
+            )
+            inserted += 1
+
+        conn.commit()
+        print(
+            "OpenAlex ingest complete: "
+            f"inserted={inserted}, skipped_duplicates={skipped_dupe}, skipped_no_id={skipped_no_id}"
+        )
+    finally:
+        cur.close()
+        conn.close()
+
+
 @app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret])
 def ingest_from_arxiv(query: str, max_results: int = 5, database: str = DATABASE):
     """
@@ -87,6 +209,7 @@ def ingest_from_arxiv(query: str, max_results: int = 5, database: str = DATABASE
     cur = conn.cursor()
     
     bronze_table = _bronze_papers_table(database=database)
+    payload_col = _resolve_bronze_payload_column(cur, bronze_table)
 
     ingested_count = 0
     skipped_count = 0
@@ -94,7 +217,7 @@ def ingest_from_arxiv(query: str, max_results: int = 5, database: str = DATABASE
     for result in search.results():
         # 1. Check if this paper already exists (idempotency)
         cur.execute(
-            f'SELECT 1 FROM {bronze_table} WHERE "raw_payload":entry_id::STRING = %s LIMIT 1',
+            f'SELECT 1 FROM {bronze_table} WHERE {payload_col}:entry_id::STRING = %s LIMIT 1',
             (result.entry_id,)
         )
         if cur.fetchone():
@@ -123,7 +246,7 @@ def ingest_from_arxiv(query: str, max_results: int = 5, database: str = DATABASE
         
         # 4. Insert into the Bronze Table
         cur.execute(
-            f'INSERT INTO {bronze_table} ("raw_payload") SELECT PARSE_JSON(%s)',
+            f'INSERT INTO {bronze_table} ({payload_col}) SELECT PARSE_JSON(%s)',
             (json_payload,)
         )
         ingested_count += 1
@@ -150,11 +273,19 @@ def ingest_from_semantic_scholar(
     - We only ingest rows that have an ArXiv id, because downstream transformation
       expects arXiv ids for PDF/conclusion extraction.
     """
+    safe_query = (query or "").strip()
+    if not safe_query:
+        raise ValueError(
+            "Semantic Scholar ingestion requires a non-empty query. "
+            "Pass --query \"your topic\" (for example: --query \"transformers\")."
+        )
+
     bronze_table = _bronze_papers_table(database=database)
     print("Using bronze_table:", bronze_table)
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
+    # Prepare API query parameters
     params = {
-        "query": query,
+        "query": safe_query,
         "limit": int(max_results),
         "fields": (
             "paperId,title,abstract,authors,externalIds,year,url,openAccessPdf,"
@@ -162,43 +293,54 @@ def ingest_from_semantic_scholar(
         ),
     }
 
+    # Connect to Snowflake Bronze layer
     conn = connect_to_snowflake(database=database, schema="BRONZE")
     cur = conn.cursor()
+    payload_col = _resolve_bronze_payload_column(cur, bronze_table)
 
     inserted = 0
     skipped_dupe = 0
     skipped_no_arxiv = 0
 
     try:
+        # Fetch papers from Semantic Scholar API
         data = _ss_get_json(url=url, params=params, timeout=30.0).get("data", [])
 
         for paper in data:
+            # Extract arXiv id from external IDs
             external_ids = paper.get("externalIds") or {}
             arxiv_id = _extract_arxiv_id(external_ids)
             if not arxiv_id:
+                print(f"Skipping paper without arXiv ID: {paper.get('title')}")
+                # Skip if no arXiv id (required for downstream processing)
                 skipped_no_arxiv += 1
                 continue
 
+            # Compose unique entry_id and get Semantic Scholar paperId
             entry_id = f"https://arxiv.org/abs/{arxiv_id}"
             ss_paper_id = paper.get("paperId")
 
+            # Check for duplicates by entry_id or ss_paper_id
             cur.execute(
                 f"""
                 SELECT 1
                 FROM {bronze_table}
-                WHERE "raw_payload":entry_id::STRING = %s
-                   OR "raw_payload":ss_paper_id::STRING = %s
+                     WHERE {payload_col}:entry_id::STRING = %s
+                         OR {payload_col}:ss_paper_id::STRING = %s
                 LIMIT 1
                 """,
                 (entry_id, str(ss_paper_id) if ss_paper_id else None),
             )
             if cur.fetchone():
+                # Skip duplicate
                 skipped_dupe += 1
                 continue
 
+            # Extract authors and PDF info
             open_pdf = paper.get("openAccessPdf") or {}
             authors = [a.get("name") for a in (paper.get("authors") or []) if a.get("name")]
 
+            # Build the raw data dictionary for Bronze
             raw_data = {
                 "source": "semantic_scholar",
                 "entry_id": entry_id,
@@ -218,18 +360,23 @@ def ingest_from_semantic_scholar(
                 "external_ids": external_ids,
             }
 
+            print(f"Ingesting paper: {raw_data['title']} ({raw_data['published']}), Authors: {raw_data['authors']}")
+
+            # Insert the paper into the Bronze table
             cur.execute(
-                f"INSERT INTO {bronze_table} (\"raw_payload\") SELECT PARSE_JSON(%s)",
+                f"INSERT INTO {bronze_table} ({payload_col}) SELECT PARSE_JSON(%s)",
                 (json.dumps(raw_data),),
             )
             inserted += 1
 
+        # Commit all inserts
         conn.commit()
         print(
             "Semantic Scholar ingest complete: "
             f"inserted={inserted}, skipped_duplicates={skipped_dupe}, skipped_no_arxiv={skipped_no_arxiv}"
         )
     finally:
+        # Clean up DB connection
         cur.close()
         conn.close()
 
@@ -244,10 +391,12 @@ def peek_bronze(limit: int = 3, database: str = DATABASE):
 
     conn = connect_to_snowflake(database=database, schema="BRONZE")
     cur = conn.cursor()
+    bronze_table = _bronze_papers_table(database=database)
+    payload_col = _resolve_bronze_payload_column(cur, bronze_table)
 
     try:
         # Pull the raw_payload from Snowflake
-        cur.execute(f'SELECT "raw_payload" FROM {_bronze_papers_table(database=database)} LIMIT %s', (limit,))
+        cur.execute(f'SELECT {payload_col} FROM {bronze_table} LIMIT %s', (limit,))
         rows = cur.fetchall()
 
         print(f"\n--- BRONZE LAYER PEEK: {len(rows)} PAPERS ---\n")
@@ -355,6 +504,8 @@ def main(query: str, max_results: int = 5, source: str = "semantic_scholar"):
     """CLI entry point for running ingestion from terminal."""
     if source == "semantic_scholar":
         result = ingest_from_semantic_scholar.remote(query=query, max_results=max_results)
+    elif source == "openalex":
+        result = ingest_from_openalex(query=query, max_results=max_results)
     else:
         result = ingest_from_arxiv.remote(query=query, max_results=max_results)
     return result

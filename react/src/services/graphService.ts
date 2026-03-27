@@ -22,3 +22,15 @@ export async function getRelationships(): Promise<Relationship[]> {
   if (!res.ok) throw new Error(`GET /relationships failed: ${res.status} ${await res.text()}`)
   return res.json()
 }
+
+export async function rebuildClusters(nClusters = 5): Promise<{
+  status: string
+  database?: string
+  result?: unknown
+}> {
+  const res = await fetch(`${API_BASE}/clusters/rebuild?n_clusters=${encodeURIComponent(String(nClusters))}`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw new Error(`POST /clusters/rebuild failed: ${res.status} ${await res.text()}`)
+  return res.json()
+}

@@ -1,9 +1,9 @@
 # Worker to split papers into sections and chunks for RAG.
-# Creates semantically meaningful chunks from abstract and conclusion,
-# structured to support future body text extraction.
+# Prefers full-paper text when available and falls back to abstract/conclusion.
 
 from typing import List, Dict, Any, Optional
 import logging
+import re
 
 from app.utils import connect_to_snowflake
 from app.config import app, image, snowflake_secret, DATABASE, qualify_table
@@ -11,7 +11,8 @@ from app.config import app, image, snowflake_secret, DATABASE, qualify_table
 WORDS_PER_CHUNK = 500
 WORDS_PER_CHUNK_MAX = 800
 CHUNK_OVERLAP_WORDS = 40
-MAX_SECTION_WORDS = 12000
+MAX_SECTION_WORDS = 25000
+MAX_FULL_TEXT_WORDS = 30000
 STATEMENT_TIMEOUT_SECONDS = 120
 
 logger = logging.getLogger(__name__)
@@ -29,11 +30,118 @@ def _chunks_table(database: str = DATABASE) -> str:
     return qualify_table("SILVER_PAPER_CHUNKS", database=database)
 
 
+def _quote_ident(identifier: str) -> str:
+    escaped = str(identifier).replace('"', '""')
+    return f'"{escaped}"'
+
+
+def _resolve_table_columns(cur, table_name: str) -> dict[str, str]:
+    cur.execute(f"DESC TABLE {table_name}")
+    columns = [row[0] for row in cur.fetchall() if row and row[0]]
+    return {str(name).lower(): _quote_ident(str(name)) for name in columns}
+
+
+def _require_columns(column_map: dict[str, str], required: list[str], table_name: str) -> dict[str, str]:
+    missing = [name for name in required if name not in column_map]
+    if missing:
+        raise RuntimeError(f"Missing required columns in {table_name}: {missing}")
+    return {name: column_map[name] for name in required}
+
+
 def _estimate_word_count(text: Optional[str]) -> int:
     """Rough word count estimate for splitting logic."""
     if not text:
         return 0
     return len(text.split())
+
+
+def _truncate_words(text: str, max_words: int) -> str:
+    words = (text or "").split()
+    if len(words) <= max_words:
+        return (text or "").strip()
+    return " ".join(words[:max_words]).strip()
+
+
+def _normalize_text(text: str) -> str:
+    if not text:
+        return ""
+    text = text.replace("\x00", " ")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _canonical_section_name(name: str) -> str:
+    lowered = (name or "").strip().lower()
+    if lowered.startswith("abstract"):
+        return "abstract"
+    if lowered in {"method", "methods", "methodology", "approach", "experimental setup", "experiments"}:
+        return "methods"
+    if lowered in {"result", "results", "evaluation", "discussion"}:
+        return "results"
+    if lowered in {"conclusion", "concluding remarks", "summary and discussion"}:
+        return "conclusion"
+    if lowered in {"introduction", "background", "related work"}:
+        return lowered
+    if lowered.startswith("limitation"):
+        return "limitations"
+    return "body"
+
+
+def _split_full_text_into_sections(full_text: str) -> List[Dict[str, str]]:
+    text = _normalize_text(full_text)
+    if not text:
+        return []
+
+    header_pattern = re.compile(
+        r"(?im)^(?:\d+(?:\.\d+)*)?\s*(abstract|introduction|background|related work|method|methods|methodology|approach|experimental setup|experiments|evaluation|results|discussion|limitations|conclusion|concluding remarks|summary and discussion)\s*$"
+    )
+    matches = list(header_pattern.finditer(text))
+    if not matches:
+        return [{"section_name": "body", "content": _truncate_words(text, MAX_FULL_TEXT_WORDS)}]
+
+    sections: List[Dict[str, str]] = []
+    for idx, match in enumerate(matches):
+        section_name = _canonical_section_name(match.group(1))
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        content = _normalize_text(text[start:end])
+        if not content:
+            continue
+        content = _truncate_words(content, MAX_SECTION_WORDS)
+        sections.append({"section_name": section_name, "content": content})
+
+    return sections
+
+
+def _build_sections_for_paper(paper: Dict[str, Any]) -> List[Dict[str, str]]:
+    full_text = _truncate_words(_normalize_text(paper.get("full_text") or ""), MAX_FULL_TEXT_WORDS)
+    abstract = _normalize_text(paper.get("abstract") or "")
+    conclusion = _normalize_text(paper.get("conclusion") or "")
+
+    sections: List[Dict[str, str]] = []
+    seen_pairs = set()
+
+    if full_text:
+        for section in _split_full_text_into_sections(full_text):
+            key = (section["section_name"], section["content"][:200])
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+            sections.append(section)
+
+    if abstract:
+        key = ("abstract", abstract[:200])
+        if key not in seen_pairs:
+            sections.insert(0, {"section_name": "abstract", "content": _truncate_words(abstract, MAX_SECTION_WORDS)})
+            seen_pairs.add(key)
+
+    if conclusion:
+        key = ("conclusion", conclusion[:200])
+        if key not in seen_pairs:
+            sections.append({"section_name": "conclusion", "content": _truncate_words(conclusion, MAX_SECTION_WORDS)})
+
+    return sections
 
 
 def _split_into_chunks(
@@ -61,19 +169,12 @@ def _split_into_chunks(
         chunk_words = words[i : i + target_words]
         chunk_text = " ".join(chunk_words)
 
-        if len(chunk_words) < target_words and i + target_words < len(words):
-            words_left = len(words) - i
-            if words_left > max_words:
-                pass
-            else:
-                chunk_words = words[i:]
-                chunk_text = " ".join(chunk_words)
-
         if chunk_text.strip():
             chunks.append(chunk_text)
 
-        overlap_buffer = chunk_words[-overlap_words:] if len(chunk_words) > overlap_words else chunk_words
-        i += len(chunk_words) - len(overlap_buffer)
+        overlap_buffer = chunk_words[-overlap_words:] if overlap_words > 0 and len(chunk_words) > overlap_words else []
+        advance = len(chunk_words) - len(overlap_buffer)
+        i += max(advance, 1)
 
     return chunks
 
@@ -84,20 +185,35 @@ def _fetch_unchunked_papers(cur, database: str = DATABASE, limit: int = 100) -> 
     """
     silver = _silver_table(database=database)
     sections = _sections_table(database=database)
+    silver_cols = _require_columns(
+        _resolve_table_columns(cur, silver),
+        ["id", "arxiv_id", "title", "abstract", "conclusion", "full_text"],
+        silver,
+    )
+    section_cols = _require_columns(
+        _resolve_table_columns(cur, sections),
+        ["paper_id", "section_id"],
+        sections,
+    )
 
     cur.execute(
         f"""
         SELECT
-            sp."id",
-            sp."arxiv_id",
-            sp."title",
-            sp."abstract",
-            sp."conclusion"
+            sp.{silver_cols["id"]} AS id,
+            sp.{silver_cols["arxiv_id"]} AS arxiv_id,
+            sp.{silver_cols["title"]} AS title,
+            sp.{silver_cols["abstract"]} AS abstract,
+            sp.{silver_cols["conclusion"]} AS conclusion,
+            sp.{silver_cols["full_text"]} AS full_text
         FROM {silver} sp
         LEFT JOIN {sections} sec
-            ON sec."paper_id" = sp."id"
-        WHERE sec."section_id" IS NULL
-            AND (sp."abstract" IS NOT NULL OR sp."conclusion" IS NOT NULL)
+            ON sec.{section_cols["paper_id"]} = sp.{silver_cols["id"]}
+        WHERE sec.{section_cols["section_id"]} IS NULL
+          AND (
+            (sp.{silver_cols["full_text"]} IS NOT NULL AND LENGTH(TRIM(sp.{silver_cols["full_text"]})) > 0)
+            OR sp.{silver_cols["abstract"]} IS NOT NULL
+            OR sp.{silver_cols["conclusion"]} IS NOT NULL
+          )
         LIMIT {int(limit)}
         """
     )
@@ -120,23 +236,33 @@ def _insert_section_and_chunks(
     """
     sections = _sections_table(database=database)
     chunks = _chunks_table(database=database)
+    section_cols = _require_columns(
+        _resolve_table_columns(cur, sections),
+        ["section_id", "paper_id", "section_name", "section_order", "content", "token_estimate"],
+        sections,
+    )
+    chunk_cols = _require_columns(
+        _resolve_table_columns(cur, chunks),
+        ["paper_id", "section_id", "chunk_index", "chunk_text", "token_estimate", "chunk_type"],
+        chunks,
+    )
 
     word_count = _estimate_word_count(content)
 
     cur.execute(
         f"""
         INSERT INTO {sections}
-        ("paper_id", "section_name", "section_order", "content", "token_estimate")
+        ({section_cols["paper_id"]}, {section_cols["section_name"]}, {section_cols["section_order"]}, {section_cols["content"]}, {section_cols["token_estimate"]})
         VALUES (%s, %s, %s, %s, %s)
         """,
         (int(paper_id), section_name, int(section_index), content, int(word_count)),
     )
     cur.execute(
         f"""
-        SELECT "section_id"
+        SELECT {section_cols["section_id"]}
         FROM {sections}
-        WHERE "paper_id" = %s AND "section_name" = %s
-        ORDER BY "section_id" DESC
+        WHERE {section_cols["paper_id"]} = %s AND {section_cols["section_name"]} = %s
+        ORDER BY {section_cols["section_id"]} DESC
         LIMIT 1
         """,
         (int(paper_id), section_name),
@@ -176,7 +302,7 @@ def _insert_section_and_chunks(
             cur.executemany(
                 f"""
                 INSERT INTO {chunks}
-                ("paper_id", "section_id", "chunk_index", "chunk_text", "token_estimate", "chunk_type")
+                ({chunk_cols["paper_id"]}, {chunk_cols["section_id"]}, {chunk_cols["chunk_index"]}, {chunk_cols["chunk_text"]}, {chunk_cols["token_estimate"]}, {chunk_cols["chunk_type"]})
                 VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 batch_to_insert,
@@ -192,85 +318,88 @@ def _insert_section_and_chunks(
 def chunk_papers(limit: int = 100, database: str = DATABASE) -> Dict[str, Any]:
     """
     Split papers into sections and chunks for RAG retrieval.
-
-    - Reads papers from SILVER_PAPERS that do not yet have chunks
-    - Extracts sections: abstract, conclusion
-    - Splits each section into ~500-word chunks with 40-word overlap
-    - Writes to SILVER_PAPER_SECTIONS and SILVER_PAPER_CHUNKS tables
-    - Idempotent: reruns only process new papers
     """
+    # establish connection to the silver schema where structured paper data lives
     conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
 
     try:
-        # Prevent a single pathological query from hanging the entire run.
+        # safety: stop the query if it takes too long to avoid wasting compute credits
         cur.execute(f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {int(STATEMENT_TIMEOUT_SECONDS)}")
 
+        # idempotency check: only fetch papers that haven't been processed into chunks yet
         papers_to_chunk = _fetch_unchunked_papers(cur, database=database, limit=limit)
         if not papers_to_chunk:
-            return {"status": "ok", "papers_chunked": 0, "note": "No new papers to chunk."}
+            return {"status": "ok", "papers_chunked": 0, "note": "no new papers to chunk."}
 
+        # initialize counters for the final execution report
         total_sections = 0
         total_chunks = 0
         skipped_papers = 0
         skipped_sections = 0
 
+        print(f"chunking {len(papers_to_chunk)} papers from silver into sections and chunks for rag...")
         for idx, paper in enumerate(papers_to_chunk, start=1):
+            print("-" * 40)
+            print(f"processing paper {idx}/{len(papers_to_chunk)} (id={paper['id']})...")
+            print(f"total chunks so far: {total_chunks} | total sections so far: {total_sections} | skipped papers so far: {skipped_papers} | skipped sections so far: {skipped_sections}")
+            
             paper_id = int(paper["id"])
             arxiv_id = paper.get("arxiv_id", "unknown")
-            abstract = (paper.get("abstract") or "").strip()
-            conclusion = (paper.get("conclusion") or "").strip()
-
-            section_idx = 0
+            
+            # transform the paper record into a list of logical sections (intro, methods, etc.)
+            sections_to_insert = _build_sections_for_paper(paper)
+            print(f"identified {len(sections_to_insert)} sections for paper {arxiv_id} (id={paper_id})")
+            print(f"section names: {[s['section_name'] for s in sections_to_insert]}")
 
             try:
-                if abstract:
-                    if _estimate_word_count(abstract) > MAX_SECTION_WORDS:
+                # skip if no text (abstract, conclusion, or full text) was found in the silver record
+                if not sections_to_insert:
+                    skipped_papers += 1
+                    logger.warning(f"skipping paper {arxiv_id} (id={paper_id}) because no usable text was found")
+                    continue
+
+                for section_idx, section in enumerate(sections_to_insert):
+                    print(section.keys())
+                    print(f"  processing section {section_idx+1}/{len(sections_to_insert)}: '{section['section_name']}'...")
+                    content = section["content"]
+                    section_name = section["section_name"]
+                    print(content)
+                    
+                    # guard against massive sections that might degrade embedding quality or hit llm limits
+                    if _estimate_word_count(content) > MAX_SECTION_WORDS:
                         skipped_sections += 1
                         logger.warning(
-                            f"Skipping oversized abstract for paper {arxiv_id} (id={paper_id})"
+                            f"skipping oversized {section_name} section for paper {arxiv_id} (id={paper_id})"
                         )
-                    else:
-                        _, added_chunks = _insert_section_and_chunks(
-                            cur,
-                            database=database,
-                            paper_id=paper_id,
-                            section_name="abstract",
-                            section_index=section_idx,
-                            content=abstract,
-                        )
-                        total_sections += 1
-                        total_chunks += added_chunks
-                        section_idx += 1
+                        continue
 
-                if conclusion:
-                    if _estimate_word_count(conclusion) > MAX_SECTION_WORDS:
-                        skipped_sections += 1
-                        logger.warning(
-                            f"Skipping oversized conclusion for paper {arxiv_id} (id={paper_id})"
-                        )
-                    else:
-                        _, added_chunks = _insert_section_and_chunks(
-                            cur,
-                            database=database,
-                            paper_id=paper_id,
-                            section_name="conclusion",
-                            section_index=section_idx,
-                            content=conclusion,
-                        )
-                        total_sections += 1
-                        total_chunks += added_chunks
+                    # create the section header and split its text into overlapping chunks
+                    _, added_chunks = _insert_section_and_chunks(
+                        cur,
+                        database=database,
+                        paper_id=paper_id,
+                        section_name=section_name,
+                        section_index=section_idx,
+                        content=content,
+                    )
+                    total_sections += 1
+                    total_chunks += added_chunks
 
+                # save progress per paper so we don't lose work if a later paper causes an error
                 conn.commit()
-                logger.info(f"Paper {arxiv_id} (id={paper_id}): chunking complete")
+                logger.info(f"paper {arxiv_id} (id={paper_id}): chunking complete")
+                
             except Exception as paper_err:
+                # fault tolerance: if one paper fails, rollback that paper but continue the batch
                 skipped_papers += 1
                 conn.rollback()
                 logger.warning(
-                    f"Skipping problematic paper {arxiv_id} (id={paper_id}) due to chunking error: {paper_err}"
+                    f"skipping problematic paper {arxiv_id} (id={paper_id}) due to chunking error: {paper_err}"
                 )
                 continue
 
+        # return telemetry for monitoring and debugging pipeline performance
         return {
             "status": "ok",
             "papers_chunked": len(papers_to_chunk) - skipped_papers,
@@ -282,9 +411,10 @@ def chunk_papers(limit: int = 100, database: str = DATABASE) -> Dict[str, Any]:
         }
 
     except Exception as e:
-        logger.error(f"Error in chunk_papers: {e}")
+        logger.error(f"error in chunk_papers: {e}")
         conn.rollback()
         raise
     finally:
+        # cleanup: close the cursor and connection to prevent snowflake session leaks
         cur.close()
         conn.close()

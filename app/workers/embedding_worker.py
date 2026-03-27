@@ -14,21 +14,44 @@ def _chunks_table(database: str = DATABASE) -> str:
     return qualify_table("SILVER_PAPER_CHUNKS", database=database)
 
 
+def _quote_ident(identifier: str) -> str:
+    escaped = str(identifier).replace('"', '""')
+    return f'"{escaped}"'
+
+
+def _resolve_table_columns(cur, table_name: str) -> dict[str, str]:
+    cur.execute(f"DESC TABLE {table_name}")
+    columns = [row[0] for row in cur.fetchall() if row and row[0]]
+    return {str(name).lower(): _quote_ident(str(name)) for name in columns}
+
+
+def _require_columns(column_map: dict[str, str], required: list[str], table_name: str) -> dict[str, str]:
+    missing = [name for name in required if name not in column_map]
+    if missing:
+        raise RuntimeError(f"Missing required columns in {table_name}: {missing}")
+    return {name: column_map[name] for name in required}
+
+
 def _fetch_unembedded_from_silver(cur, database: str = DATABASE, limit: int = 200) -> List[Dict[str, Any]]:
     """
     Fetch papers in SILVER_PAPERS that do not have embeddings yet.
     """
     silver = _silver_table(database=database)
+    cols = _require_columns(
+        _resolve_table_columns(cur, silver),
+        ["id", "title", "conclusion", "abstract", "embedding"],
+        silver,
+    )
     cur.execute(
         f"""
         SELECT
-            "id",
-            "title",
-            "conclusion",
-            "abstract"
+            {cols["id"]} AS id,
+            {cols["title"]} AS title,
+            {cols["conclusion"]} AS conclusion,
+            {cols["abstract"]} AS abstract
         FROM {silver}
-        WHERE "embedding" IS NULL
-            AND ("abstract" IS NOT NULL OR "conclusion" IS NOT NULL)
+        WHERE {cols["embedding"]} IS NULL
+            AND ({cols["abstract"]} IS NOT NULL OR {cols["conclusion"]} IS NOT NULL)
         LIMIT {int(limit)}
         """
     )
@@ -42,10 +65,15 @@ def _update_embeddings(cur, database: str, rows: List[Tuple[int, List[float]]], 
         return
 
     silver = _silver_table(database=database)
+    cols = _require_columns(
+        _resolve_table_columns(cur, silver),
+        ["id", "embedding"],
+        silver,
+    )
     sql = f"""
     UPDATE {silver}
-    SET "embedding" = PARSE_JSON(%s)::VECTOR(FLOAT, {dim})
-    WHERE "id" = %s
+    SET {cols["embedding"]} = PARSE_JSON(%s)::VECTOR(FLOAT, {dim})
+    WHERE {cols["id"]} = %s
     """
 
     binds = [(json.dumps(emb), int(pid)) for pid, emb in rows]
@@ -54,19 +82,24 @@ def _update_embeddings(cur, database: str, rows: List[Tuple[int, List[float]]], 
 
 def _compute_topk_in_snowflake(cur, database: str, pid: int, k: int) -> List[int]:
     silver = _silver_table(database=database)
+    cols = _require_columns(
+        _resolve_table_columns(cur, silver),
+        ["id", "embedding"],
+        silver,
+    )
     cur.execute(
         f"""
         WITH q AS (
-            SELECT "embedding" AS qvec
+            SELECT {cols["embedding"]} AS qvec
             FROM {silver}
-            WHERE "id" = %s
-                AND "embedding" IS NOT NULL
+            WHERE {cols["id"]} = %s
+                AND {cols["embedding"]} IS NOT NULL
         )
-        SELECT e."id"
+        SELECT e.{cols["id"]}
         FROM {silver} e, q
-        WHERE e."id" <> %s
-            AND e."embedding" IS NOT NULL
-        ORDER BY VECTOR_COSINE_SIMILARITY(e."embedding", q.qvec) DESC
+        WHERE e.{cols["id"]} <> %s
+            AND e.{cols["embedding"]} IS NOT NULL
+        ORDER BY VECTOR_COSINE_SIMILARITY(e.{cols["embedding"]}, q.qvec) DESC
         LIMIT %s
         """,
         (pid, pid, int(k)),
@@ -76,11 +109,16 @@ def _compute_topk_in_snowflake(cur, database: str, pid: int, k: int) -> List[int
 
 def _write_similar_ids(cur, database: str, pid: int, sim_ids: List[int]):
     silver = _silver_table(database=database)
+    cols = _require_columns(
+        _resolve_table_columns(cur, silver),
+        ["id", "similar_embeddings_ids"],
+        silver,
+    )
     cur.execute(
         f"""
         UPDATE {silver}
-        SET "similar_embeddings_ids" = PARSE_JSON(%s)
-        WHERE "id" = %s
+        SET {cols["similar_embeddings_ids"]} = PARSE_JSON(%s)
+        WHERE {cols["id"]} = %s
         """,
         (json.dumps(sim_ids), int(pid)),
     )
@@ -88,11 +126,16 @@ def _write_similar_ids(cur, database: str, pid: int, sim_ids: List[int]):
 
 def _count_embedded_papers(cur, database: str) -> int:
     silver = _silver_table(database=database)
+    cols = _require_columns(
+        _resolve_table_columns(cur, silver),
+        ["embedding"],
+        silver,
+    )
     cur.execute(
         f"""
         SELECT COUNT(*)
         FROM {silver}
-        WHERE "embedding" IS NOT NULL
+        WHERE {cols["embedding"]} IS NOT NULL
         """
     )
     return int(cur.fetchone()[0])
@@ -313,13 +356,18 @@ def backfill_similar_ids(limit: int = 200, k: int = 10, database: str = DATABASE
 
     conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
+    cols = _require_columns(
+        _resolve_table_columns(cur, silver),
+        ["id", "embedding", "similar_embeddings_ids"],
+        silver,
+    )
     try:
         cur.execute(
             f"""
-                SELECT id
+                SELECT {cols["id"]}
                 FROM {silver}
-                WHERE "embedding" IS NOT NULL
-                    AND "similar_embeddings_ids" IS NULL
+                WHERE {cols["embedding"]} IS NOT NULL
+                    AND {cols["similar_embeddings_ids"]} IS NULL
                 LIMIT {int(limit)}
             """
         )
@@ -332,8 +380,8 @@ def backfill_similar_ids(limit: int = 200, k: int = 10, database: str = DATABASE
             cur.execute(
                 f"""
                 UPDATE {silver}
-                SET "similar_embeddings_ids" = PARSE_JSON(%s)
-                WHERE "id" = %s
+                SET {cols["similar_embeddings_ids"]} = PARSE_JSON(%s)
+                WHERE {cols["id"]} = %s
                 """,
                 (json.dumps(sim_ids), int(pid)),
             )
@@ -350,16 +398,21 @@ def _fetch_unembedded_chunks(cur, database: str = DATABASE, limit: int = 500) ->
     Fetch chunks that do not have embeddings yet.
     """
     chunks = _chunks_table(database=database)
+    cols = _require_columns(
+        _resolve_table_columns(cur, chunks),
+        ["chunk_id", "paper_id", "section_id", "chunk_text", "embedding"],
+        chunks,
+    )
     cur.execute(
         f"""
         SELECT
-            "chunk_id",
-            "paper_id",
-            "section_id",
-            "chunk_text"
+            {cols["chunk_id"]} AS chunk_id,
+            {cols["paper_id"]} AS paper_id,
+            {cols["section_id"]} AS section_id,
+            {cols["chunk_text"]} AS chunk_text
         FROM {chunks}
-        WHERE "embedding" IS NULL
-            AND "chunk_text" IS NOT NULL
+        WHERE {cols["embedding"]} IS NULL
+            AND {cols["chunk_text"]} IS NOT NULL
         LIMIT {int(limit)}
         """
     )
@@ -376,10 +429,15 @@ def _update_chunk_embeddings(cur, database: str, rows: List[Tuple[int, List[floa
         return
 
     chunks = _chunks_table(database=database)
+    cols = _require_columns(
+        _resolve_table_columns(cur, chunks),
+        ["chunk_id", "embedding"],
+        chunks,
+    )
     sql = f"""
     UPDATE {chunks}
-    SET "embedding" = PARSE_JSON(%s)::VECTOR(FLOAT, {dim})
-    WHERE "chunk_id" = %s
+    SET {cols["embedding"]} = PARSE_JSON(%s)::VECTOR(FLOAT, {dim})
+    WHERE {cols["chunk_id"]} = %s
     """
 
     binds = [(json.dumps(emb), int(chunk_id)) for chunk_id, emb in rows]

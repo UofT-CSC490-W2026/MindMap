@@ -54,11 +54,14 @@ base_image = (
     )
 )
 
-# Add local files to base image
+# Add local files and services (with copy=True so we can run .env() after)
 def _add_local_files(img):
+    """Add config and utils files with copy=True, then set PYTHONPATH."""
     return (
-        img.add_local_file(APP_DIR / "config.py", remote_path="/root/config.py")
-        .add_local_file(APP_DIR / "utils.py", remote_path="/root/utils.py")
+        img.add_local_file(APP_DIR / "config.py", remote_path="/root/config.py", copy=True)
+        .add_local_file(APP_DIR / "utils.py", remote_path="/root/utils.py", copy=True)
+        .add_local_dir(APP_DIR / "services", remote_path="/root/services", copy=True)
+        .env({"PYTHONPATH": "/root"})
     )
 
 # Ingestion image (minimal)
@@ -90,6 +93,33 @@ image_citation_aware = _add_local_files(
     )
 )
 
-# Shared secret
-snowflake_secret = modal.Secret.from_name("mindmap-1")
-semantic_scholar_secret = modal.Secret.from_name("mindmap-1")
+# Clustering image (ML + scikit-learn for K-Means topic clustering)
+clustering_image = _add_local_files(
+    base_image.pip_install(
+        "numpy",
+        "scikit-learn",
+    )
+)
+
+# LLM image (with LLM dependencies for summarization)
+llm_image = _add_local_files(
+    base_image.pip_install(
+        "openai",
+        "pydantic",
+    )
+)
+
+# RAG + LLM image for retrieval-backed QA workers.
+rag_image = _add_local_files(
+    base_image.pip_install(
+        "sentence-transformers==2.7.0",
+        "torch",
+        "numpy",
+        "pydantic",
+    )
+)
+
+# Shared secrets
+snowflake_secret = modal.Secret.from_name("snowflake-creds")
+semantic_scholar_secret = modal.Secret.from_name("semantic-scholar-api")
+openai_secret = modal.Secret.from_name("openai-api")

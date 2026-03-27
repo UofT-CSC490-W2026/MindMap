@@ -1,7 +1,13 @@
 const USE_MOCK = false  // ← flip to false when backend is ready
 const API_BASE = import.meta.env.VITE_API_URL ?? 'https://benmarlow--mindmap-pipeline-fastapi-app.modal.run'
 
-export async function ingestPaper(arxivId: string): Promise<{ job_id: string }> {
+export async function ingestPaper(arxivId: string): Promise<{
+  job_id?: string
+  status: 'processing' | 'failed'
+  stage?: string
+  bronze_status?: 'ok' | 'skipped' | 'failed'
+  error?: string
+}> {
   const normalizedArxivId = normalizeArxivId(arxivId)
   const res = await fetch(`${API_BASE}/papers/ingest`, {
     method: 'POST',

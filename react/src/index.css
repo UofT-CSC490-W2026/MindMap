@@ -87,6 +87,7 @@ input {
 .brandSub {
   font-size: 12px;
   color: var(--research-text);
+  font-style: italic;
 }
 .accent {
   color: var(--research-accent);
@@ -474,3 +475,106 @@ input {
   font-size: 12px;
 }
 
+
+/* ── Light mode theme ── */
+[data-theme="light"] {
+  --research-dark: #f0f4f8;
+  --research-deep: #ffffff;
+  --research-accent: #0070f3;
+  --research-text: #4a5568;
+  --research-light: #1a202c;
+  --research-stroke: rgba(0, 112, 243, 0.15);
+  --panel-bg: rgba(255, 255, 255, 0.85);
+}
+
+[data-theme="light"] .searchInput {
+  background: #f7fafc;
+  color: #1a202c;
+  border: 1px solid rgba(0, 112, 243, 0.2);
+}
+
+[data-theme="light"] .searchInput::placeholder {
+  color: #a0aec0;
+}
+
+[data-theme="light"] .navItem:hover {
+  background: rgba(0, 112, 243, 0.08);
+}
+
+[data-theme="light"] .navItemActive {
+  background: #0070f3;
+  color: #ffffff;
+}
+
+[data-theme="light"] .paperItem {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(0, 112, 243, 0.12);
+  color: #1a202c;
+}
+
+[data-theme="light"] .paperItem:hover {
+  background: rgba(0, 112, 243, 0.05);
+  border-color: rgba(0, 112, 243, 0.25);
+}
+
+[data-theme="light"] .paperItemActive {
+  background: rgba(0, 112, 243, 0.08);
+  border-color: rgba(0, 112, 243, 0.4);
+}
+
+[data-theme="light"] .chip {
+  color: #0070f3;
+  background: rgba(0, 112, 243, 0.1);
+}
+
+[data-theme="light"] .tierTag {
+  color: #0070f3;
+  background: rgba(0, 112, 243, 0.08);
+}
+
+[data-theme="light"] .metric {
+  background: rgba(0, 112, 243, 0.04);
+  border-color: rgba(0, 112, 243, 0.12);
+}
+
+[data-theme="light"] .metricValue {
+  color: #0070f3;
+}
+
+[data-theme="light"] .cta {
+  border-color: rgba(0, 112, 243, 0.35);
+  background: rgba(0, 112, 243, 0.06);
+  color: #0070f3;
+}
+
+[data-theme="light"] .cta:hover {
+  background: #0070f3;
+  color: #ffffff;
+}
+
+[data-theme="light"] .divider {
+  background: rgba(0, 112, 243, 0.1);
+}
+
+[data-theme="light"] .stats {
+  background: rgba(255, 255, 255, 0.75);
+  border-color: rgba(0, 112, 243, 0.12);
+}
+
+[data-theme="light"] .center {
+  border-color: rgba(0, 112, 243, 0.12);
+}
+
+[data-theme="light"] .miniAction {
+  background: rgba(0, 112, 243, 0.06);
+  border-color: rgba(0, 112, 243, 0.12);
+}
+
+[data-theme="light"] .tierNote {
+  background: rgba(0, 112, 243, 0.03);
+}
+
+[data-theme="light"] .ghostBtn:hover {
+  background: rgba(0, 112, 243, 0.08);
+  color: #0070f3;
+}

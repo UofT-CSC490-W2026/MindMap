@@ -1,10 +1,7 @@
 """
 Build Gold layer relationships (citations + similarity) from Silver layer.
 """
-import cProfile
-import io
 import json
-import pstats
 from typing import Iterable, List, Optional, Tuple
 
 try:
@@ -82,8 +79,6 @@ def _fetch_papers(cur, paper_id: Optional[int], database: str = DATABASE) -> Lis
     # invocation, then the SELECT pulls conclusion text for every paper —
     # fetching large text columns for the full corpus is the heaviest query
     # in build_knowledge_graph before any edge logic runs.
-    profiler = cProfile.Profile()
-    profiler.enable()
 
     silver = _silver_table(database=database)
     col_map = _resolve_table_columns(cur, silver)
@@ -358,8 +353,6 @@ def build_knowledge_graph(paper_id: int = None, database: str = DATABASE):
     Populate Gold layer with citation and semantic similarity relationships.
     If paper_id is None, process all papers with cached relationships.
     """
-    profiler = cProfile.Profile()
-    profiler.enable()
 
     # Connect to Snowflake GOLD schema
     conn = connect_to_snowflake(database=database, schema="GOLD")

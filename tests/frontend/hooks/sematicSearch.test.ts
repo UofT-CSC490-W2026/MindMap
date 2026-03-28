@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { useSemanticSearch } from '../../../react/src/hooks/sematicSearch'
+import { fetchWithFallback, useSemanticSearch } from '../../../react/src/hooks/sematicSearch'
 
 const fetchMock = vi.fn()
 
@@ -103,6 +103,12 @@ describe('useSemanticSearch', () => {
     })
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.results).toEqual([])
+  })
+
+  it('fetchWithFallback throws default message when urls list is empty', async () => {
+    await expect(fetchWithFallback([], new AbortController().signal)).rejects.toThrow(
+      'Search failed on all configured API URLs.',
+    )
   })
 
 })

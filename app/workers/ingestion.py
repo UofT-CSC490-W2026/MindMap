@@ -1,3 +1,6 @@
+import cProfile
+import io
+import pstats
 import requests
 import json
 import re
@@ -257,6 +260,8 @@ def ingest_from_arxiv(query: str, max_results: int = 5, database: str = DATABASE
     else:
         print(f"Ingested {ingested_count} papers into Bronze layer.")
 
+    profiler.disable()
+    _write_profile("ingest_from_arxiv", profiler)
 
 @app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret], timeout=60 * 5, max_containers=1)
 def ingest_from_semantic_scholar(
@@ -301,6 +306,12 @@ def ingest_from_semantic_scholar(
     inserted = 0
     skipped_dupe = 0
     skipped_no_arxiv = 0
+
+    # Profiled because: _ss_get_json makes a rate-limited HTTP call, then for
+    # each paper we do a Snowflake duplicate-check SELECT + INSERT — the
+    # per-paper round-trips to Snowflake compound quickly at large max_results.
+    profiler = cProfile.Profile()
+    profiler.enable()
 
     try:
         # Fetch papers from Semantic Scholar API
@@ -375,6 +386,9 @@ def ingest_from_semantic_scholar(
             "Semantic Scholar ingest complete: "
             f"inserted={inserted}, skipped_duplicates={skipped_dupe}, skipped_no_arxiv={skipped_no_arxiv}"
         )
+
+        profiler.disable()
+        _write_profile("ingest_from_semantic_scholar", profiler)
     finally:
         # Clean up DB connection
         cur.close()

@@ -1,7 +1,10 @@
 # Offline worker to compute and backfill embeddings for papers in SILVER_PAPERS.
 # Also computes and caches top-k similar paper ids based on embedding similarity.
 from typing import List, Dict, Any, Tuple, Optional
+import cProfile
+import io
 import json
+import pstats
 
 from app.utils import connect_to_snowflake
 from app.config import app, ml_image, snowflake_secret, DATABASE, qualify_table
@@ -36,6 +39,12 @@ def _fetch_unembedded_from_silver(cur, database: str = DATABASE, limit: int = 20
     """
     Fetch papers in SILVER_PAPERS that do not have embeddings yet.
     """
+    # Profiled because: DESC TABLE is called on every invocation to resolve
+    # column names dynamically — this round-trip to Snowflake adds latency
+    # before the actual SELECT even starts, and it repeats for every batch.
+    profiler = cProfile.Profile()
+    profiler.enable()
+
     silver = _silver_table(database=database)
     cols = _require_columns(
         _resolve_table_columns(cur, silver),
@@ -57,8 +66,12 @@ def _fetch_unembedded_from_silver(cur, database: str = DATABASE, limit: int = 20
     )
     rows = cur.fetchall()
     cols = [c[0].lower() for c in cur.description]
-    return [dict(zip(cols, r)) for r in rows]
+    result = [dict(zip(cols, r)) for r in rows]
 
+    profiler.disable()
+    _write_profile("_fetch_unembedded_from_silver", profiler)
+
+    return result
 
 def _update_embeddings(cur, database: str, rows: List[Tuple[int, List[float]]], dim: int = 384):
     if not rows:
@@ -81,6 +94,12 @@ def _update_embeddings(cur, database: str, rows: List[Tuple[int, List[float]]], 
 
 
 def _compute_topk_in_snowflake(cur, database: str, pid: int, k: int) -> List[int]:
+    # Profiled because: this runs a full cosine-similarity scan over every
+    # embedded paper in Silver for each paper we process — O(n) Snowflake
+    # compute per paper, so it scales badly as the corpus grows.
+    profiler = cProfile.Profile()
+    profiler.enable()
+
     silver = _silver_table(database=database)
     cols = _require_columns(
         _resolve_table_columns(cur, silver),
@@ -104,8 +123,12 @@ def _compute_topk_in_snowflake(cur, database: str, pid: int, k: int) -> List[int
         """,
         (pid, pid, int(k)),
     )
-    return [int(r[0]) for r in cur.fetchall()]
+    result = [int(r[0]) for r in cur.fetchall()]
 
+    profiler.disable()
+    _write_profile(f"_compute_topk_in_snowflake (pid={pid})", profiler)
+
+    return result
 
 def _write_similar_ids(cur, database: str, pid: int, sim_ids: List[int]):
     silver = _silver_table(database=database)
@@ -283,6 +306,12 @@ def run_embedding_batch(
         if not to_embed:
             return {"status": "ok", "embedded": 0, "note": "No new rows with NULL embedding."}
 
+        # Profiled because: SentenceTransformer model load is expensive (~2-5s),
+        # and model.encode() over a batch is the dominant CPU/GPU cost — seeing
+        # its share of total time tells us whether batching or model choice matters.
+        profiler = cProfile.Profile()
+        profiler.enable()
+
         model = SentenceTransformer(model_name)
 
         ids: List[int] = []
@@ -331,6 +360,9 @@ def run_embedding_batch(
                 sim_ids = _compute_topk_in_snowflake(cur, database=database, pid=pid, k=k)
                 _write_similar_ids(cur, database=database, pid=pid, sim_ids=sim_ids)
             conn.commit()
+
+        profiler.disable()
+        _write_profile("run_embedding_batch", profiler)
 
         return {
             "status": "ok",
@@ -469,6 +501,12 @@ def run_chunk_embedding_batch(
         if not chunks_to_embed:
             return {"status": "ok", "chunks_embedded": 0, "note": "No new chunks to embed."}
 
+        # Profiled because: chunk counts are typically 5-10× paper counts, so
+        # model.encode() runs over a much larger list — this is likely the
+        # single most expensive encode call in the whole pipeline.
+        profiler = cProfile.Profile()
+        profiler.enable()
+
         model = SentenceTransformer(model_name)
 
         chunk_ids: List[int] = []
@@ -502,6 +540,9 @@ def run_chunk_embedding_batch(
 
         _update_chunk_embeddings(cur, database=database, rows=payload)
         conn.commit()
+
+        profiler.disable()
+        _write_profile("run_chunk_embedding_batch", profiler)
 
         return {
             "status": "ok",

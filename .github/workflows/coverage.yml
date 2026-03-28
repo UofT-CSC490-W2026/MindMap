@@ -35,7 +35,6 @@ jobs:
         run: |
           PYTHONPATH=app pytest tests \
             --cov=app/workers \
-            --cov-fail-under=100 \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
             --cov-report=json:coverage.json

@@ -88,6 +88,25 @@ def test_fetch_papers_with_specific_paper_id():
     assert result == [(1, "[]", "[]", "Conclusion")]
 
 
+def test_fetch_papers_raises_when_no_citation_columns():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        ("ID",), ("SIMILAR_EMBEDDINGS_IDS",), ("CONCLUSION",),
+    ]
+    with pytest.raises(RuntimeError, match="Missing required citation source columns"):
+        _fetch_papers(mock_cursor, paper_id=None)
+
+
+def test_fetch_papers_prefers_reference_list_when_both_present():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("ID",), ("REFERENCE_LIST",), ("CITATION_LIST",), ("SIMILAR_EMBEDDINGS_IDS",), ("CONCLUSION",)],
+        [(2, "[]", "[3]", "Conclusion")],
+    ]
+    result = _fetch_papers(mock_cursor, paper_id=None)
+    assert result == [(2, "[]", "[3]", "Conclusion")]
+
+
 # ---------------------------------------------------------------------------
 # _dedupe_edges
 # ---------------------------------------------------------------------------
@@ -176,6 +195,19 @@ def test_citation_targets_with_ss_ids():
     assert result == [42, 43]
 
 
+def test_citation_targets_with_arxiv_and_doi():
+    from workers.graph_worker import _citation_targets
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("ID",), ("ARXIV_ID",), ("DOI",)],
+        [(11,)],  # arxiv matches
+        [(12,)],  # doi matches
+    ]
+    citations = [{"arxiv_id": "1706.03762"}, {"doi": "10.1000/xyz"}]
+    result = _citation_targets(mock_cursor, citations)
+    assert sorted(result) == [11, 12]
+
+
 def test_citation_targets_empty():
     from workers.graph_worker import _citation_targets
     mock_cursor = MagicMock()
@@ -219,6 +251,45 @@ def test_bulk_merge_edges_with_edges():
     edges = [(1, 2, "SIMILAR", 0.9, None), (1, 3, "CITES", 1.0, None)]
     result = _bulk_merge_edges(mock_cursor, edges)
     assert result == 2
+
+
+def test_bulk_merge_edges_without_reason_column():
+    from workers.graph_worker import _bulk_merge_edges
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        ("SOURCE_PAPER_ID",), ("TARGET_PAPER_ID",), ("RELATIONSHIP_TYPE",), ("STRENGTH",),
+    ]
+    edges = [(1, 2, "SIMILAR", 0.9, "unused-reason")]
+    result = _bulk_merge_edges(mock_cursor, edges)
+    assert result == 1
+
+
+def test_build_knowledge_graph_semantic_phase_error():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.side_effect = [
+        [("SOURCE_PAPER_ID",), ("TARGET_PAPER_ID",), ("RELATIONSHIP_TYPE",), ("STRENGTH",), ("REASON",)],
+        [],
+        [("ID",), ("CITATION_LIST",), ("SIMILAR_EMBEDDINGS_IDS",), ("CONCLUSION",)],
+        [(1, '[{"ss_paper_id":"abc"}]', "[2]", "Source conclusion")],
+        [("ID",), ("SS_ID",)],
+        [],  # no citation match => warn path
+        [("ID",), ("CONCLUSION",)],
+    ]
+    mock_cursor.fetchone.return_value = ("Target conclusion",)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+    mock_conn.rollback.return_value = None
+
+    classifier = MagicMock()
+    classifier.classify.map.side_effect = RuntimeError("classifier boom")
+
+    with patch("workers.graph_worker.connect_to_snowflake", return_value=mock_conn):
+        with patch("workers.graph_worker.RelationshipClassifier", return_value=classifier):
+            with patch("workers.graph_worker._bulk_merge_edges", return_value=1):
+                result = build_knowledge_graph(paper_id=None)
+
+    assert result["semantic_error"] is not None
     mock_cursor.execute.assert_called()
 
 
@@ -279,7 +350,8 @@ def test_build_knowledge_graph_runs_classifier_for_new_semantic_edges():
             with patch("workers.graph_worker._bulk_merge_edges", return_value=2):
                 result = build_knowledge_graph(paper_id=None)
 
-    assert result["edges_merged"] == 2
+    # build_knowledge_graph now reports deterministic + semantic merged edges.
+    assert result["edges_merged"] == 4
     classifier.classify.map.assert_called_once()
 
 

@@ -24,6 +24,7 @@ from workers.ingestion import (  # noqa: E402
     ingest_from_semantic_scholar,
     ingest_from_arxiv,
     ingest_from_openalex,
+    ingest_single_paper,
 )
 
 
@@ -129,9 +130,7 @@ def test_ingest_from_arxiv_happy_path():
 
     with patch("workers.ingestion.connect_to_snowflake", return_value=mock_conn):
         with patch.dict(sys.modules, {"arxiv": mock_arxiv_module}):
-            # Re-patch the arxiv name in the ingestion module's namespace
-            with patch("workers.ingestion.arxiv", mock_arxiv_module):
-                ingest_from_arxiv(query="test", max_results=1)
+            ingest_from_arxiv(query="test", max_results=1)
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +316,7 @@ def test_ingest_from_arxiv_skips_duplicate():
     mock_arxiv.Search.return_value = mock_search
 
     with patch("workers.ingestion.connect_to_snowflake", return_value=mock_conn):
-        with patch("workers.ingestion.arxiv", mock_arxiv):
+        with patch.dict(sys.modules, {"arxiv": mock_arxiv}):
             ingest_from_arxiv(query="test", max_results=1)
 
 
@@ -463,4 +462,51 @@ def test_peek_bronze_handles_json_error():
     with patch("workers.ingestion.connect_to_snowflake", return_value=mock_conn):
         peek_bronze(limit=1)
 
+    mock_cursor.close.assert_called_once()
+
+
+def test_ingest_single_paper_skips_duplicate():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = (1,)
+    mock_cursor.execute.return_value = None
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    with patch("workers.ingestion.connect_to_snowflake", return_value=mock_conn):
+        result = ingest_single_paper("1706.03762")
+
+    assert result["status"] == "skipped"
+    mock_conn.commit.assert_not_called()
+    mock_cursor.close.assert_called_once()
+
+
+def test_ingest_single_paper_inserts_row():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = None
+    mock_cursor.execute.return_value = None
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit.return_value = None
+
+    ss_payload = {
+        "paperId": "pid",
+        "title": "Attention Is All You Need",
+        "abstract": "Abstract",
+        "authors": [{"name": "Author A"}],
+        "externalIds": {"DOI": "10.1/abc"},
+        "year": 2017,
+        "url": "https://example.com",
+        "openAccessPdf": {"url": "https://example.com/p.pdf"},
+        "publicationDate": "2017-06-12",
+        "journal": {"name": "NIPS"},
+        "citationCount": 123,
+        "referenceCount": 45,
+    }
+
+    with patch("workers.ingestion.connect_to_snowflake", return_value=mock_conn):
+        with patch("workers.ingestion._ss_get_json", return_value=ss_payload):
+            result = ingest_single_paper("1706.03762")
+
+    assert result["status"] == "ok"
+    mock_conn.commit.assert_called_once()
     mock_cursor.close.assert_called_once()

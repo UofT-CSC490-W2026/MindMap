@@ -2,29 +2,11 @@
 # Prefers full-paper text when available and falls back to abstract/conclusion.
 
 from typing import List, Dict, Any, Optional, Tuple
-import cProfile
-import io
 import logging
-import pstats
 import re
 
 from app.utils import connect_to_snowflake
 from app.config import app, image, snowflake_secret, DATABASE, qualify_table
-
-_PROFILE_LOG = "/tmp/profile_output.txt"
-
-
-def _write_profile(label: str, profiler: cProfile.Profile, top_n: int = 10) -> None:
-    """Print cProfile stats to stdout so Modal streams them to the terminal."""
-    s = io.StringIO()
-    pstats.Stats(profiler, stream=s).sort_stats("cumulative").print_stats(top_n)
-    output = (
-        f"\n{'=' * 70}\n"
-        f"  PROFILE: {label}\n"
-        f"{'=' * 70}\n"
-        + s.getvalue()
-    )
-    print(output)
 
 WORDS_PER_CHUNK = 500
 WORDS_PER_CHUNK_MAX = 800
@@ -217,8 +199,6 @@ def _fetch_unchunked_papers(cur, database: str = DATABASE, limit: int = 100) -> 
     # Profiled because: this runs a LEFT JOIN between Silver and Sections tables
     # to find un-chunked papers — as both tables grow, this join becomes the
     # most expensive query in the chunking pipeline.
-    profiler = cProfile.Profile()
-    profiler.enable()
 
     silver = _silver_table(database=database)
     sections = _sections_table(database=database)
@@ -258,9 +238,6 @@ def _fetch_unchunked_papers(cur, database: str = DATABASE, limit: int = 100) -> 
     cols = [c[0].lower() for c in cur.description]
     result = [dict(zip(cols, r)) for r in rows]
 
-    profiler.disable()
-    _write_profile("_fetch_unchunked_papers", profiler)
-
     return result
 
 def _insert_section_and_chunks(
@@ -278,8 +255,6 @@ def _insert_section_and_chunks(
     # Profiled because: this calls DESC TABLE twice (sections + chunks) on
     # every section of every paper — those schema-inspection round-trips to
     # Snowflake add up to significant overhead across a large batch.
-    profiler = cProfile.Profile()
-    profiler.enable()
 
     sections = _sections_table(database=database)
     chunks = _chunks_table(database=database)
@@ -359,9 +334,6 @@ def _insert_section_and_chunks(
         f"Paper {paper_id}: section '{section_name}' split into {len(split_chunks)} chunks"
     )
 
-    profiler.disable()
-    _write_profile(f"_insert_section_and_chunks (paper={paper_id}, section={section_name})", profiler)
-
     return int(section_id), len(split_chunks)
 
 
@@ -377,8 +349,6 @@ def chunk_papers(limit: int = 100, database: str = DATABASE) -> Dict[str, Any]:
     # Profiled because: the outer loop calls _insert_section_and_chunks for
     # every section of every paper, each of which does multiple Snowflake
     # round-trips — this is the most DB-intensive public function in the pipeline.
-    profiler = cProfile.Profile()
-    profiler.enable()
 
     try:
         # safety: stop the query if it takes too long to avoid wasting compute credits
@@ -466,9 +436,6 @@ def chunk_papers(limit: int = 100, database: str = DATABASE) -> Dict[str, Any]:
             "chunks_created": total_chunks,
             "database": database,
         }
-
-        profiler.disable()
-        _write_profile("chunk_papers", profiler)
 
         return result
 

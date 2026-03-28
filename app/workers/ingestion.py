@@ -1,28 +1,9 @@
-import cProfile
-import io
-import pstats
 import requests
 import json
 import re
 import threading
 import time
 import os
-
-_PROFILE_LOG = "/tmp/profile_output.txt"
-
-
-def _write_profile(label: str, profiler: cProfile.Profile, top_n: int = 10) -> None:
-    """Print cProfile stats to stdout so Modal streams them to the terminal."""
-    s = io.StringIO()
-    pstats.Stats(profiler, stream=s).sort_stats("cumulative").print_stats(top_n)
-    output = (
-        f"\n{'=' * 70}\n"
-        f"  PROFILE: {label}\n"
-        f"{'=' * 70}\n"
-        + s.getvalue()
-    )
-    print(output)
-
 
 from app.config import app, image, snowflake_secret, semantic_scholar_secret, DATABASE, qualify_table
 from app.utils import connect_to_snowflake
@@ -222,12 +203,6 @@ def ingest_from_arxiv(query: str, max_results: int = 5, database: str = DATABASE
     """
     import arxiv
 
-    # Profiled because: arxiv.Search.results() makes paginated HTTP calls to the
-    # arXiv API, and each paper triggers a Snowflake duplicate-check + INSERT —
-    # both are network-bound and dominate wall time for large max_results values.
-    profiler = cProfile.Profile()
-    profiler.enable()
-
     search = arxiv.Search(query=query, max_results=max_results)
     
     conn = connect_to_snowflake(database=database, schema="BRONZE")
@@ -282,9 +257,6 @@ def ingest_from_arxiv(query: str, max_results: int = 5, database: str = DATABASE
     else:
         print(f"Ingested {ingested_count} papers into Bronze layer.")
 
-    profiler.disable()
-    _write_profile("ingest_from_arxiv", profiler)
-
 @app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret], timeout=60 * 5, max_containers=1)
 def ingest_from_semantic_scholar(
     query: str,
@@ -332,8 +304,6 @@ def ingest_from_semantic_scholar(
     # Profiled because: _ss_get_json makes a rate-limited HTTP call, then for
     # each paper we do a Snowflake duplicate-check SELECT + INSERT — the
     # per-paper round-trips to Snowflake compound quickly at large max_results.
-    profiler = cProfile.Profile()
-    profiler.enable()
 
     try:
         # Fetch papers from Semantic Scholar API
@@ -408,9 +378,6 @@ def ingest_from_semantic_scholar(
             "Semantic Scholar ingest complete: "
             f"inserted={inserted}, skipped_duplicates={skipped_dupe}, skipped_no_arxiv={skipped_no_arxiv}"
         )
-
-        profiler.disable()
-        _write_profile("ingest_from_semantic_scholar", profiler)
     finally:
         # Clean up DB connection
         cur.close()

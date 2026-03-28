@@ -1,10 +1,7 @@
 """
 Build Gold layer relationships (citations + similarity) from Silver layer.
 """
-import cProfile
-import io
 import json
-import pstats
 from typing import Iterable, List, Optional, Tuple
 
 try:
@@ -17,21 +14,6 @@ except ModuleNotFoundError:
     from config import app, image, snowflake_secret, DATABASE, qualify_table
     from config import clustering_image, llm_image, openai_secret, APP_DIR
     from utils import connect_to_snowflake
-
-_PROFILE_LOG = "/tmp/profile_output.txt"
-
-
-def _write_profile(label: str, profiler: cProfile.Profile, top_n: int = 10) -> None:
-    """Print cProfile stats to stdout so Modal streams them to the terminal."""
-    s = io.StringIO()
-    pstats.Stats(profiler, stream=s).sort_stats("cumulative").print_stats(top_n)
-    output = (
-        f"\n{'=' * 70}\n"
-        f"  PROFILE: {label}\n"
-        f"{'=' * 70}\n"
-        + s.getvalue()
-    )
-    print(output)
 
 
 def _silver_table(database: str = DATABASE) -> str:
@@ -97,8 +79,6 @@ def _fetch_papers(cur, paper_id: Optional[int], database: str = DATABASE) -> Lis
     # invocation, then the SELECT pulls conclusion text for every paper —
     # fetching large text columns for the full corpus is the heaviest query
     # in build_knowledge_graph before any edge logic runs.
-    profiler = cProfile.Profile()
-    profiler.enable()
 
     silver = _silver_table(database=database)
     col_map = _resolve_table_columns(cur, silver)
@@ -373,8 +353,6 @@ def build_knowledge_graph(paper_id: int = None, database: str = DATABASE):
     Populate Gold layer with citation and semantic similarity relationships.
     If paper_id is None, process all papers with cached relationships.
     """
-    profiler = cProfile.Profile()
-    profiler.enable()
 
     # Connect to Snowflake GOLD schema
     conn = connect_to_snowflake(database=database, schema="GOLD")

@@ -64,7 +64,7 @@ export function useSemanticSearch(query: string) {
   return { results, loading }
 }
 
-async function fetchWithFallback(urls: string[], signal: AbortSignal): Promise<Response> {
+export async function fetchWithFallback(urls: string[], signal: AbortSignal): Promise<Response> {
   let lastError: unknown = null
 
   for (const url of urls) {

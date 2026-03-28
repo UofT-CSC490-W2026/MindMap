@@ -1019,12 +1019,14 @@ def test_transform_to_silver_prefetched_without_tldr_uses_conclusion_fallback():
     mock_conn.commit.return_value = None
 
     with patch("workers.transformation.extract_full_text_pdf", MagicMock(local=MagicMock(return_value={"full_text": "\nConclusion\nUseful text", "source": "pdf"}))):
-        with patch("workers.transformation.extract_conclusion", MagicMock(local=MagicMock(return_value="fallback conclusion"))):
-            with patch("workers.transformation.connect_to_snowflake", return_value=mock_conn):
-                transform_to_silver("2301.00001", ss_prefetched={"references": [], "citations": [], "ss_id": "ss1", "tldr": ""})
+        with patch("workers.transformation.get_references", MagicMock(local=MagicMock(return_value={"data": []}))):
+            with patch("workers.transformation.fetch_connections_ss", MagicMock(local=MagicMock(return_value=[]))):
+                with patch("workers.transformation.extract_conclusion", MagicMock(local=MagicMock(return_value="fallback conclusion"))):
+                    with patch("workers.transformation.connect_to_snowflake", return_value=mock_conn):
+                        transform_to_silver("2301.00001", ss_prefetched={"references": [], "citations": [], "ss_id": "ss1", "tldr": ""})
 
     args = mock_cursor.execute.call_args[0][1]
-    assert args[5] == "fallback conclusion"
+    assert args[5] == "Conclusion\nUseful text"
 
 
 def test_transform_to_silver_database_error_rolls_back():
@@ -1038,9 +1040,12 @@ def test_transform_to_silver_database_error_rolls_back():
     mock_conn.cursor.return_value = mock_cursor
 
     with patch("workers.transformation.extract_full_text_pdf", MagicMock(local=MagicMock(return_value={"full_text": "", "source": "unavailable"}))):
-        with patch("workers.transformation.extract_conclusion", MagicMock(local=MagicMock(return_value="fallback"))):
-            with patch("workers.transformation.connect_to_snowflake", return_value=mock_conn):
-                transform_to_silver("2301.00001", ss_prefetched={"references": [], "citations": [], "ss_id": "ss1", "tldr": ""})
+        with patch("workers.transformation.get_references", MagicMock(local=MagicMock(return_value={"data": []}))):
+            with patch("workers.transformation.fetch_connections_ss", MagicMock(local=MagicMock(return_value=[]))):
+                with patch("workers.transformation.extract_conclusion", MagicMock(local=MagicMock(return_value="fallback"))):
+                    with patch("workers.transformation.connect_to_snowflake", return_value=mock_conn):
+                        with pytest.raises(RuntimeError, match="Database Error"):
+                            transform_to_silver("2301.00001", ss_prefetched={"references": [], "citations": [], "ss_id": "ss1", "tldr": ""})
 
     mock_conn.rollback.assert_called_once()
 
@@ -1070,7 +1075,8 @@ def test_transform_to_silver_non_prefetched_ss_lookup_failure_is_ignored():
 
 def test_transform_to_silver_outer_exception_is_swallowed():
     with patch("workers.transformation.extract_full_text_pdf", MagicMock(local=MagicMock(side_effect=RuntimeError("boom")))):
-        assert transform_to_silver("2301.00001") is None
+        with pytest.raises(RuntimeError, match="boom"):
+            transform_to_silver("2301.00001")
 
 
 def test_main_parallel_prefetch_and_sequential_error_continue():
@@ -1093,6 +1099,18 @@ def test_main_parallel_branch_dispatches_remote_calls():
                 assert main(parallel=1) is None
 
     assert remote.call_count == 2
+
+
+def test_process_single_silver_orchestrates_prefetch_and_transform():
+    from workers.transformation import process_single_silver
+
+    with patch("workers.transformation._fetch_ss_batch_metadata", return_value={"x1": {"ss_id": "ssx"}}):
+        remote = MagicMock(return_value={"status": "ok"})
+        with patch("workers.transformation.transform_to_silver", MagicMock(remote=remote)):
+            result = process_single_silver("x1", database="DB")
+
+    assert result == {"status": "ok"}
+    remote.assert_called_once()
 
 
 def test_backfill_missing_ss_ids_batch_failure_and_invalid_rows():

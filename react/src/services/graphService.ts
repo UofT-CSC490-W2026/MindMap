@@ -1,36 +1,14 @@
-import type { Paper, Relationship } from '../types/paper'
+import { apiPost } from './apiClient'
+import type { GraphResponse, GraphExpandResponse } from '../types/graph'
 
-const USE_MOCK = false
-const API_BASE = import.meta.env.VITE_API_URL ?? 'https://benmarlow--mindmap-pipeline-fastapi-app.modal.run'
-
-export async function getPapers(): Promise<Paper[]> {
-  if (USE_MOCK) {
-    const data = await import('../data/mockPapers.json')
-    return data.default as Paper[]
-  }
-  const res = await fetch(`${API_BASE}/papers`)
-  if (!res.ok) throw new Error(`GET /papers failed: ${res.status} ${await res.text()}`)
-  return res.json()
+export async function queryGraph(query: string): Promise<GraphResponse> {
+  return apiPost<GraphResponse>('/graphs/query', { query })
 }
 
-export async function getRelationships(): Promise<Relationship[]> {
-  if (USE_MOCK) {
-    const data = await import('../data/mockRelationships.json')
-    return data.default as Relationship[]
-  }
-  const res = await fetch(`${API_BASE}/relationships`)
-  if (!res.ok) throw new Error(`GET /relationships failed: ${res.status} ${await res.text()}`)
-  return res.json()
+export async function expandGraph(graphId: string, paperId: string): Promise<GraphExpandResponse> {
+  return apiPost<GraphExpandResponse>('/graphs/expand', { graph_id: graphId, paper_id: paperId })
 }
 
-export async function rebuildClusters(nClusters = 5): Promise<{
-  status: string
-  database?: string
-  result?: unknown
-}> {
-  const res = await fetch(`${API_BASE}/clusters/rebuild?n_clusters=${encodeURIComponent(String(nClusters))}`, {
-    method: 'POST',
-  })
-  if (!res.ok) throw new Error(`POST /clusters/rebuild failed: ${res.status} ${await res.text()}`)
-  return res.json()
+export async function rebuildClusters(nClusters = 5): Promise<{ status: string; result?: unknown }> {
+  return apiPost('/graphs/clusters/rebuild', { n_clusters: nClusters })
 }

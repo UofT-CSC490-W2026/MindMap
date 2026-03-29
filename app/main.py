@@ -3,7 +3,7 @@ import modal
 # Import worker modules so Modal can discover functions used by API jobs.
 from app.workers import embedding_worker, graph_worker, ingestion, transformation  # noqa: F401
 from app.config import app, snowflake_secret
-from app.api import api as web_app
+from app.api.router import router as web_app
 from app import jobs  # noqa: F401
 
 

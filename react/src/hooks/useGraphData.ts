@@ -1,37 +1,40 @@
-import { useState, useEffect, useCallback } from 'react'
-import { getPapers, getRelationships } from '../services/graphService'
-import { buildGraph } from '../utils/graphUtils'
-import type { GraphNode, GraphLink } from '../types/graph'
+import { useState, useCallback } from 'react'
+import { queryGraph } from '../services/graphService'
+import type { GraphNode, GraphLink, GraphResponse } from '../types/graph'
 
 type GraphData = {
   nodes: GraphNode[]
   links: GraphLink[]
+  graphId: string | null
+  query: string | null
 }
 
 export function useGraphData() {
-  const [data, setData] = useState<GraphData>({ nodes: [], links: [] })
-  const [loading, setLoading] = useState(true)
+  const [data, setData] = useState<GraphData>({ nodes: [], links: [], graphId: null, query: null })
+  const [loading, setLoading] = useState(false)
 
-  const reload = useCallback(async () => {
+  const search = useCallback(async (query: string) => {
     setLoading(true)
     try {
-      const [papers, relationships] = await Promise.all([
-        getPapers(),
-        getRelationships(),
-      ])
-      const graph = buildGraph(papers, relationships)
-      setData(graph)
+      const response: GraphResponse = await queryGraph(query)
+      setData({
+        nodes: response.nodes,
+        links: response.links,
+        graphId: response.graph_id,
+        query: response.query ?? query,
+      })
     } catch (err) {
       console.error('Failed to load graph data:', err)
-      setData({ nodes: [], links: [] })
+      setData({ nodes: [], links: [], graphId: null, query })
     } finally {
       setLoading(false)
     }
   }, [])
 
-  useEffect(() => {
-    reload()
-  }, [reload])
+  const reload = useCallback(async () => {
+    if (!data.query) return
+    await search(data.query)
+  }, [data.query, search])
 
-  return { data, loading, reload }
+  return { data, loading, search, reload }
 }

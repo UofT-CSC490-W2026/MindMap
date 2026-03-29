@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
-import { ingestPaper, getPaperStatus } from '../services/paperService'
+import { createIngestion, pollIngestionStatus } from '../services/ingestionService'
 
-type Status = 'idle' | 'submitting' | 'pending' | 'processing' | 'done' | 'failed'
+type Status = 'idle' | 'submitting' | 'processing' | 'done' | 'failed'
 
 export function useIngest() {
   const [status, setStatus] = useState<Status>('idle')
@@ -16,26 +16,19 @@ export function useIngest() {
     setError(null)
     setStatus('submitting')
     try {
-      const ingest = await ingestPaper(arxivInput)
-      if (ingest.status === 'failed') {
-        setStatus('failed')
-        setError(ingest.error ?? 'Bronze ingestion failed')
-        return
-      }
-      if (!ingest.job_id) {
-        setStatus('failed')
-        setError('Missing job id from ingest response')
-        return
-      }
+      const ingest = await createIngestion(arxivInput)
       const jobId = ingest.job_id
-      setStatus('pending')
+      setStatus('processing')
       pollRef.current = setInterval(async () => {
         try {
-          const res = await getPaperStatus(jobId)
-          setStatus(res.status)
-          if (res.status === 'done' || res.status === 'failed') {
+          const res = await pollIngestionStatus(jobId)
+          if (res.status === 'done') {
+            setStatus('done')
             stopPolling()
-            if (res.status === 'failed') setError(res.error ?? 'Ingestion failed')
+          } else if (res.status === 'failed') {
+            setStatus('failed')
+            setError(res.error ?? 'Ingestion failed')
+            stopPolling()
           }
         } catch {
           stopPolling()

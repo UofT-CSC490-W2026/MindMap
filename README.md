@@ -45,7 +45,34 @@ npm run dev
 
 Open the local URL shown in your terminal (usually `http://localhost:5173`).
 
-### 2. Developer / Admin Setup 
+### 2. Running the Backend API
+
+The backend runs on Modal. Make sure your `snowflake-creds` secret is set with all required fields:
+
+```bash
+modal secret create snowflake-creds \
+  SNOWFLAKE_ACCOUNT="<your_account>" \
+  SNOWFLAKE_USER="<your_user>" \
+  SNOWFLAKE_PASSWORD="<your_password>" \
+  SNOWFLAKE_WAREHOUSE="<your_warehouse>" \
+  --force
+```
+
+Then serve the API:
+
+```bash
+modal serve app/main.py
+```
+
+Modal will print a URL like `https://<workspace>--mindmap-pipeline-fastapi-app-dev.modal.run`. Set that in `react/.env`:
+
+```
+VITE_API_URL=https://<your-modal-url>
+```
+
+Restart the Vite dev server after updating `.env`. Use `modal deploy app/main.py` instead for a persistent deployment that stays up after closing your terminal.
+
+### 3. Developer / Admin Setup 
 
 Use this if you are developing backend features or refreshing pipeline data.
 

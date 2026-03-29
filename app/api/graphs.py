@@ -33,7 +33,6 @@ async def expand_graph(request: GraphExpandRequest):
 async def rebuild_clusters(n_clusters: int = Query(default=5, ge=2, le=20)):
     try:
         from app.workers.graph_worker import run_topic_clustering
-
         result = await run_topic_clustering.remote.aio(
             n_clusters=n_clusters, database=DATABASE
         )

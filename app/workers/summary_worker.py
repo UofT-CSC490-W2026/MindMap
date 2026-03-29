@@ -11,10 +11,10 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from utils import connect_to_snowflake
-from config import app, llm_image, openai_secret, snowflake_secret, DATABASE, qualify_table
-from services.llm_client import LLMClient
-from services.summary_schema import PaperSummary, SummaryContext
+from app.utils import connect_to_snowflake
+from app.config import app, llm_image, openai_secret, snowflake_secret, DATABASE, qualify_table
+from app.services.llm_client import LLMClient
+from app.services.summary_schema import PaperSummary, SummaryContext
 
 logger = logging.getLogger(__name__)
 

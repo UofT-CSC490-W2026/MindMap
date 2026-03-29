@@ -38,7 +38,8 @@ def _fetch_paper_rows(cur, paper_ids: List[int], database: str = DATABASE) -> Li
             p."arxiv_id",
             b."raw_payload",
             c."cluster_id",
-            c."cluster_name"
+            c."cluster_name",
+            ARRAY_SIZE(p."citation_list") AS citation_count
         FROM ids i
         JOIN {silver_table} p ON p."id" = i.pid
         LEFT JOIN {bronze_table} b
@@ -50,7 +51,7 @@ def _fetch_paper_rows(cur, paper_ids: List[int], database: str = DATABASE) -> Li
     rows = cur.fetchall()
     results = []
     for row in rows:
-        pid, title, arxiv_id, raw_payload, cluster_id, cluster_name = row
+        pid, title, arxiv_id, raw_payload, cluster_id, cluster_name, citation_count = row
         payload: dict = {}
         if isinstance(raw_payload, str):
             try:
@@ -74,7 +75,7 @@ def _fetch_paper_rows(cur, paper_ids: List[int], database: str = DATABASE) -> Li
                 year = int(str(payload["published"])[:4])
             except Exception:
                 year = 0
-        citations = payload.get("citationCount") or 0
+        citations = citation_count or 0
 
         results.append({
             "id": int(pid),
@@ -90,10 +91,10 @@ def _fetch_paper_rows(cur, paper_ids: List[int], database: str = DATABASE) -> Li
 
 
 def _fetch_edges(cur, paper_ids: List[int], database: str = DATABASE) -> List[GraphLink]:
-    """Fetch GOLD_CONNECTIONS edges where source is in paper_ids."""
+    """Fetch GOLD_PAPER_RELATIONSHIPS edges where source is in paper_ids."""
     if not paper_ids:
         return []
-    gold_table = qualify_table("GOLD_CONNECTIONS", database=database)
+    gold_table = qualify_table("GOLD_PAPER_RELATIONSHIPS", database=database)
     values_sql = ", ".join(["(%s)"] * len(paper_ids))
     cur.execute(
         f"""
@@ -197,7 +198,7 @@ async def expand_graph(graph_id: str, paper_id: int) -> GraphExpandResponse:
         paper_rows = _fetch_paper_rows(cur, neighbor_ids, database=DATABASE) if neighbor_ids else []
 
         # Fetch edges from the source paper
-        gold_table = qualify_table("GOLD_CONNECTIONS", database=DATABASE)
+        gold_table = qualify_table("GOLD_PAPER_RELATIONSHIPS", database=DATABASE)
         cur.execute(
             f"""
             SELECT "source_paper_id", "target_paper_id", "relationship_type", "strength"

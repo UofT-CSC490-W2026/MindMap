@@ -21,7 +21,7 @@ def _silver_table(database: str = DATABASE) -> str:
 
 
 def _gold_table(database: str = DATABASE) -> str:
-    return qualify_table("GOLD_CONNECTIONS", database=database)
+    return qualify_table("GOLD_PAPER_RELATIONSHIPS", database=database)
 
 
 def _quote_ident(identifier: str) -> str:

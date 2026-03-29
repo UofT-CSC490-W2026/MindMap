@@ -74,9 +74,9 @@ def get_related_papers(
         if not force_refresh:
             cur.execute(
                 f"""
-                SELECT similar_embeddings_ids
+                SELECT "similar_embeddings_ids"
                 FROM {silver}
-                WHERE id = %s
+                WHERE "id" = %s
                 """,
                 (int(paper_id),),
             )
@@ -87,10 +87,10 @@ def get_related_papers(
                 cur.execute(
                     f"""
                     WITH ids(id) AS (SELECT column1 FROM VALUES {values_sql})
-                    SELECT s.id, s.arxiv_id, s.title
+                    SELECT s."id", s."arxiv_id", s."title"
                     FROM ids
                     JOIN {silver} s
-                                            ON s.id = ids.id
+                                            ON s."id" = ids.id
                     """,
                     [int(x) for x in cached_ids],
                 )
@@ -116,21 +116,21 @@ def get_related_papers(
         cur.execute(
             f"""
             WITH q AS (
-                            SELECT embedding AS qvec
+                            SELECT "embedding" AS qvec
               FROM {silver}
-                            WHERE id = %s
-                                AND embedding IS NOT NULL
+                            WHERE "id" = %s
+                                AND "embedding" IS NOT NULL
             )
             SELECT
-                            e.id,
-                            e.arxiv_id,
-                            e.title,
-                            e.abstract,
-                            VECTOR_COSINE_SIMILARITY(e.embedding, q.qvec) AS score
+                            e."id",
+                            e."arxiv_id",
+                            e."title",
+                            e."abstract",
+                            VECTOR_COSINE_SIMILARITY(e."embedding", q.qvec) AS score
             FROM {silver} e, q
-                        WHERE e.id <> %s
-                            AND e.embedding IS NOT NULL
-                            AND VECTOR_COSINE_SIMILARITY(e.embedding, q.qvec) >= %s
+                        WHERE e."id" <> %s
+                            AND e."embedding" IS NOT NULL
+                            AND VECTOR_COSINE_SIMILARITY(e."embedding", q.qvec) >= %s
             ORDER BY score DESC
             LIMIT %s
             """,
@@ -155,8 +155,8 @@ def get_related_papers(
             cur.execute(
                 f"""
                 UPDATE {silver}
-                SET similar_embeddings_ids = PARSE_JSON(%s)
-                WHERE id = %s
+                SET "similar_embeddings_ids" = PARSE_JSON(%s)
+                WHERE "id" = %s
                 """,
                 (json.dumps(ids_only), int(paper_id)),
             )
@@ -199,14 +199,14 @@ def semantic_search(
         cur.execute(
             f"""
             SELECT
-                            s.id,
-                            s.arxiv_id,
-                            s.title,
-                            s.abstract,
-                            VECTOR_COSINE_SIMILARITY(s.embedding, PARSE_JSON(%s)::VECTOR(FLOAT, 384)) AS vec_score
+                            s."id",
+                            s."arxiv_id",
+                            s."title",
+                            s."abstract",
+                            VECTOR_COSINE_SIMILARITY(s."embedding", PARSE_JSON(%s)::VECTOR(FLOAT, 384)) AS vec_score
             FROM {silver} s
-                        WHERE s.embedding IS NOT NULL
-                            AND VECTOR_COSINE_SIMILARITY(s.embedding, PARSE_JSON(%s)::VECTOR(FLOAT, 384)) >= %s
+                        WHERE s."embedding" IS NOT NULL
+                            AND VECTOR_COSINE_SIMILARITY(s."embedding", PARSE_JSON(%s)::VECTOR(FLOAT, 384)) >= %s
             ORDER BY vec_score DESC
             LIMIT %s
             """,
@@ -326,7 +326,7 @@ def retrieve_similar_chunks_local(
     model_name: str = "sentence-transformers/all-MiniLM-L12-v2",
     max_context_chars: int = 20000,
     database: str = DATABASE,
-    schema: str = SCHEMA,
+    schema: str = "SILVER",
 ) -> List[Dict[str, Any]]:
     """
     Local helper for paper-scoped retrieval with bounded returned context.

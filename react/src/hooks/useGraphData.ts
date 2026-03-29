@@ -18,7 +18,14 @@ export function useGraphData() {
     try {
       const response: GraphResponse = await queryGraph(query)
       setData({
-        nodes: response.nodes,
+        nodes: response.nodes.map((n: any) => ({
+          ...n,
+          shortTitle: n.label ?? n.title?.slice(0, 40) ?? '',
+          searchText: `${n.title} ${n.authors}`.toLowerCase(),
+          primaryTopic: n.cluster_name ?? '',
+          clusterId: n.cluster_id,
+          clusterName: n.cluster_name,
+        })),
         links: response.links,
         graphId: response.graph_id,
         query: response.query ?? query,

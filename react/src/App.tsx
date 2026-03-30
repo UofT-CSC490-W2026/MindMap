@@ -961,6 +961,14 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {panelPaper && (
+        <PaperPanel
+          paper={panelPaper}
+          lightMode={lightMode}
+          onClose={() => setPanelPaper(null)}
+        />
+      )}
     </main>
   )
 }

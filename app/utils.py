@@ -1,7 +1,7 @@
 import os
 
 import snowflake.connector
-from config import DATABASE, WAREHOUSE
+from app.config import DATABASE, WAREHOUSE
 
 
 def connect_to_snowflake(schema: str, database: str = DATABASE, warehouse: str = WAREHOUSE):

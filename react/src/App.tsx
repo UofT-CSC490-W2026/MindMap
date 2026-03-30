@@ -4,8 +4,8 @@ import ForceGraph2D from 'react-force-graph-2d'
 import { useGraphData } from './hooks/useGraphData'
 import { useSemanticSearch } from './hooks/sematicSearch'
 import { rebuildClusters } from './services/graphService'
+import { createIngestion, pollIngestionStatus } from './services/ingestionService'
 import type { GraphNode, GraphLink } from './types/graph'
-import { getPaperStatus, ingestPaper } from './services/paperService'
 import { clusterColor, CLUSTER_COLORS } from './utils/graphUtils'
 import PaperPanel from './components/PaperPanel'
 
@@ -36,7 +36,7 @@ export default function App() {
   const progressTimerRef = useRef<number | null>(null)
   const hideProgressTimerRef = useRef<number | null>(null)
   const rebuildStartedAtRef = useRef<number | null>(null)
-  const { data: graphData, loading, reload: reloadGraph } = useGraphData()
+  const { data: graphData, loading, search: searchGraph, reload: reloadGraph } = useGraphData()
   const optimisticIdRef = useRef(-1)
   const [optimisticNodes, setOptimisticNodes] = useState<GraphNode[]>([])
   const [query, setQuery] = useState('')
@@ -78,9 +78,9 @@ export default function App() {
   async function waitForIngestJob(jobId: string, timeoutMs = 120000) {
     const start = Date.now()
     while (Date.now() - start < timeoutMs) {
-      let status: { status: 'pending' | 'processing' | 'done' | 'failed'; error?: string } | null = null
+      let status: { status: 'processing' | 'done' | 'failed'; error?: string | null } | null = null
       try {
-        status = await getPaperStatus(jobId)
+        status = await pollIngestionStatus(jobId)
       } catch {
         await new Promise((resolve) => setTimeout(resolve, 2000))
         continue
@@ -261,6 +261,8 @@ export default function App() {
     )
   }
 
+  const hasGraph = graphData.nodes.length > 0 || loading
+
   return (
     <main className="app">
       <header className="topbar glass">
@@ -282,6 +284,12 @@ export default function App() {
               value={query}
               onChange={(e) => { setQuery(e.target.value); setDropdownOpen(true) }}
               onFocus={() => { if (query.trim().length >= 2) setDropdownOpen(true) }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && query.trim().length >= 2) {
+                  setDropdownOpen(false)
+                  void searchGraph(query.trim())
+                }
+              }}
               placeholder="Search papers, authors, or topics..."
               className="searchInput"
               spellCheck={false}
@@ -375,9 +383,9 @@ export default function App() {
                       if (!arxivId) return
                       setAddingId(r.paperId)
                       try {
-                        const ingest = await ingestPaper(arxivId)
-                        if (ingest.status === 'failed') {
-                          throw new Error(ingest.error ?? 'Bronze ingestion failed')
+                        const ingest = await createIngestion(arxivId)
+                        if (ingest.status !== 'processing' && ingest.status !== 'skipped') {
+                          throw new Error('Bronze ingestion failed')
                         }
 
                         // Mark as added immediately after Bronze is confirmed.
@@ -478,6 +486,15 @@ export default function App() {
         </div>
       </header>
       <section className="content">
+        {!hasGraph && !loading ? (
+          <div style={{ flex: 1, display: 'grid', placeItems: 'center', color: 'var(--research-text)', textAlign: 'center', gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 18, marginBottom: 8, opacity: 0.7 }}>Enter a topic above and press Enter to explore a research landscape</div>
+              <div style={{ fontSize: 13, opacity: 0.4 }}>e.g. "attention mechanisms", "model quantization", "diffusion models"</div>
+            </div>
+          </div>
+        ) : (
+        <>
         {/* ── Left sidebar ── */}
         <aside className="left glass panel">
           <div className="panelHeader">Graph Controls</div>
@@ -912,6 +929,8 @@ export default function App() {
             </>
           )}
         </aside>
+        </>
+        )}
       </section>
       {rebuildProgress > 0 && (
         <div

@@ -7,6 +7,7 @@ MindMap is an AI-assisted system for exploring academic literature through seman
 ## Table of Contents
 
 - [Installation / Getting Started](#installation--getting-started)
+- [Running Tests](#running-tests)
 - [Codebase Overview](#codebase-overview)
 - [Pipeline Overview](#pipeline-overview)
 - [Features](#features)
@@ -45,7 +46,34 @@ npm run dev
 
 Open the local URL shown in your terminal (usually `http://localhost:5173`).
 
-### 2. Developer / Admin Setup 
+### 2. Running the Backend API
+
+The backend runs on Modal. Make sure your `snowflake-creds` secret is set with all required fields:
+
+```bash
+modal secret create snowflake-creds \
+  SNOWFLAKE_ACCOUNT="<your_account>" \
+  SNOWFLAKE_USER="<your_user>" \
+  SNOWFLAKE_PASSWORD="<your_password>" \
+  SNOWFLAKE_WAREHOUSE="<your_warehouse>" \
+  --force
+```
+
+Then serve the API:
+
+```bash
+modal serve app/main.py
+```
+
+Modal will print a URL like `https://<workspace>--mindmap-pipeline-fastapi-app-dev.modal.run`. Set that in `react/.env`:
+
+```
+VITE_API_URL=https://<your-modal-url>
+```
+
+Restart the Vite dev server after updating `.env`. Use `modal deploy app/main.py` instead for a persistent deployment that stays up after closing your terminal.
+
+### 3. Developer / Admin Setup 
 
 Use this if you are developing backend features or refreshing pipeline data.
 
@@ -176,6 +204,38 @@ modal run app/main.py \
   --query "$QUERY" \
   --max-results 20 \
   --skip-summary false
+```
+
+## Running Tests
+
+### Python (pytest)
+
+Make sure you've activated your virtual environment and installed dependencies first (see [Developer / Admin Setup](#3-developer--admin-setup)).
+
+```bash
+# run all tests (scoped to the tests/ directory)
+pytest
+
+# run with coverage report
+pytest --cov=app
+
+# run a specific test file
+pytest tests/test_ingestion.py
+
+# run property-based tests only
+pytest tests/properties/
+```
+
+### Frontend (Vitest)
+
+```bash
+cd react
+
+# run all tests once
+npm test
+
+# run with coverage
+npm run test:coverage
 ```
 
 ## Codebase Overview

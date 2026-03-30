@@ -1,50 +1,30 @@
-const USE_MOCK = false  // ← flip to false when backend is ready
-const API_BASE = import.meta.env.VITE_API_URL ?? ''
+import { normalizeArxivId } from './ingestionService'
 
-export async function ingestPaper(arxivId: string): Promise<{
-  job_id?: string
-  status: 'processing' | 'failed'
-  stage?: string
-  bronze_status?: 'ok' | 'skipped' | 'failed'
-  error?: string
-}> {
-  const normalizedArxivId = normalizeArxivId(arxivId)
-  const res = await fetch(`${API_BASE}/papers/ingest`, {
+export type { IngestionCreateResponse, IngestionStatusResponse } from './ingestionService'
+
+function baseUrl(): string {
+  return (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
+}
+
+export async function ingestPaper(arxivInput: string): Promise<{ status: string; job_id?: string; error?: string }> {
+  const arxiv_id = normalizeArxivId(arxivInput)
+  const res = await fetch(`${baseUrl()}/papers/ingest`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ arxiv_id: normalizedArxivId }),
+    body: JSON.stringify({ arxiv_id }),
   })
-  if (!res.ok) throw new Error(await res.text())
-  return res.json()
-}
-
-let mockCallCount = 0
-
-export async function getPaperStatus(
-  job_id: string,
-): Promise<{ status: 'pending' | 'processing' | 'done' | 'failed'; error?: string }> {
-  if (USE_MOCK) {
-    await delay(400)
-    mockCallCount++
-    if (mockCallCount === 1) return { status: 'pending' }
-    if (mockCallCount === 2) return { status: 'processing' }
-    mockCallCount = 0
-    return { status: 'done' }
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text)
   }
-  const res = await fetch(`${API_BASE}/papers/${job_id}/status`)
-  if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
 
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function normalizeArxivId(raw: string): string {
-  const trimmed = raw.trim()
-  const urlMatch = trimmed.match(/arxiv\.org\/(?:abs|pdf)\/([0-9]{4}\.[0-9]+)/)
-  if (urlMatch) return urlMatch[1]
-  const idMatch = trimmed.match(/^([0-9]{4}\.[0-9]+)(?:v\d+)?$/)
-  if (idMatch) return idMatch[1]
-  throw new Error(`Could not parse an ArXiv ID from: "${raw}"`)
+export async function getPaperStatus(jobId: string): Promise<{ status: string; error?: string }> {
+  const res = await fetch(`${baseUrl()}/papers/${encodeURIComponent(jobId)}/status`)
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text)
+  }
+  return res.json()
 }

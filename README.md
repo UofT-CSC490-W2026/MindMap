@@ -6,9 +6,17 @@ MindMap is an AI-assisted academic literature explorer that helps researchers un
 
 ---
 
-## Demo / Current Status
+## Demo / Grading
+
+> **For graders / reviewers: you only need to open the frontend URL. No credentials, no setup.**
+>
+> The backend is already deployed on Modal and the frontend is pointed at it. Just open the app and use it.
 
 The full pipeline — ingestion through graph construction — is working end-to-end on the `main` branch. The React frontend connects to a deployed Modal API and renders the paper relationship graph. Semantic search, related-paper lookup, and chunk-level RAG retrieval are all functional. Summarization (Step 8) is implemented but skipped by default due to LLM cost.
+
+**How the live demo works:** We run `modal deploy app/main.py` once from our machine. Modal hosts the FastAPI backend at a persistent public URL that stays live even after our terminal closes. The frontend is built with that URL baked in as `VITE_API_URL` and deployed statically. The grading team opens one URL and the full app is live — no Python, no credentials, no local setup required on their end.
+
+Note: Modal containers go cold after a period of inactivity. The first request after a cold start may take 5–10 seconds to respond — this is normal. Subsequent requests are fast.
 
 ---
 
@@ -36,7 +44,19 @@ MindMap/
 
 ## Quick Start
 
-### Path 1 — Frontend Only
+There are three paths depending on what you need:
+
+| Path | Who it's for |
+|---|---|
+| Path 1 — Frontend only | Browsing the UI locally with mock data |
+| Path 2 — Backend API | Deploying or serving the live backend (team members only) |
+| Path 3 — Full pipeline | Running the data pipeline or developing backend features |
+
+**Graders/reviewers:** you don't need any of these. The live app is already deployed — see [Demo / Grading](#demo--grading) above.
+
+---
+
+### Path 1 — Frontend Only (local, mock data)
 
 Prerequisites: Node.js 18+, npm
 
@@ -47,11 +67,11 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. The UI will use mock data if `VITE_API_URL` is not set.
+Open `http://localhost:5173`. The UI will use mock data if `VITE_API_URL` is not set. To point it at the live backend, add `VITE_API_URL=<deployed-modal-url>` to `react/.env` before running.
 
 ---
 
-### Path 2 — Backend API
+### Path 2 — Backend API (team deployment)
 
 Prerequisites: Modal CLI configured (`modal setup`), Snowflake credentials
 
@@ -88,7 +108,7 @@ Restart the Vite dev server after updating `.env`.
 
 ---
 
-### Path 3 — Full Pipeline / Developer Setup
+### Path 3 — Full Pipeline / Developer Setup (team only)
 
 Prerequisites: Python 3.10+, `uv`, Modal CLI, Snowflake credentials
 

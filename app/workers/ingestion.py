@@ -4,6 +4,8 @@ import re
 import threading
 import time
 import os
+import random
+from typing import Optional
 
 from app.config import app, image, snowflake_secret, semantic_scholar_secret, DATABASE, qualify_table
 from app.utils import connect_to_snowflake
@@ -38,7 +40,7 @@ def _resolve_bronze_payload_column(cur, bronze_table: str) -> str:
     )
 
 
-def _extract_arxiv_id(external_ids: dict) -> str | None:
+def _extract_arxiv_id(external_ids: dict) -> Optional[str]:
     if not isinstance(external_ids, dict):
         return None
     raw = external_ids.get("ArXiv")
@@ -65,28 +67,32 @@ def _ss_get_json(url: str, params: dict, timeout: float = 30.0) -> dict:
     def _request(req_headers):
         return httpx.get(url, params=params, timeout=timeout, headers=req_headers)
 
-    response = _request(headers)
-    # If provided key is invalid/forbidden, retry once without auth to use public access.
-    if headers and response.status_code in (401, 403):
-        print("Semantic Scholar key rejected; retrying request without API key.")
-        headers = None
+    response = None
+    max_attempts = 4
+
+    for attempt in range(max_attempts):
         response = _request(headers)
 
-    if response.status_code == 429:
-        # Backoff once while still preserving the strict lower-bound interval.
-        time.sleep(2.0)
-        with _ss_lock:
-            now = time.time()
-            wait = _SS_MIN_INTERVAL_SECONDS - (now - _ss_last_request_ts)
-            if wait > 0:
-                time.sleep(wait)
-            _ss_last_request_ts = time.time()
-        response = _request(headers)
-
-        # If rate-limited key-auth also resolves to unauthorized, final fallback to public access.
+        # If provided key is invalid/forbidden, retry once without auth to use public access.
         if headers and response.status_code in (401, 403):
-            print("Semantic Scholar key rejected after retry; falling back to unauthenticated access.")
-            response = _request(None)
+            print("Semantic Scholar key rejected; retrying request without API key.")
+            headers = None
+            continue
+
+        if response.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1:
+            delay = min(20.0, 2.0 * (2 ** attempt) + random.uniform(0.0, 0.5))
+            print(
+                f"Semantic Scholar transient error {response.status_code}; "
+                f"retrying in {delay:.2f}s..."
+            )
+            time.sleep(delay)
+            with _ss_lock:
+                now = time.time()
+                wait = _SS_MIN_INTERVAL_SECONDS - (now - _ss_last_request_ts)
+                if wait > 0:
+                    time.sleep(wait)
+                _ss_last_request_ts = time.time()
+            continue
 
     try:
         response.raise_for_status()

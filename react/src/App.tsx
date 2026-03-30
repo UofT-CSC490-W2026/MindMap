@@ -18,6 +18,58 @@ function asNodeId(v: GraphLink['source'] | GraphLink['target']) {
 
 type ViewMode = 'papers' | 'clusters' | 'semantic'
 
+type ClusterCenter = { x: number; y: number }
+
+function buildClusterCenters(nodes: GraphNode[], radius = 260): Map<number, ClusterCenter> {
+  const clusterIds = Array.from(
+    new Set(nodes.map((n) => n.clusterId).filter((id): id is number => id != null)),
+  ).sort((a, b) => a - b)
+
+  const centers = new Map<number, ClusterCenter>()
+  if (clusterIds.length === 0) return centers
+  if (clusterIds.length === 1) {
+    centers.set(clusterIds[0], { x: 0, y: 0 })
+    return centers
+  }
+
+  clusterIds.forEach((clusterId, i) => {
+    const theta = (2 * Math.PI * i) / clusterIds.length
+    centers.set(clusterId, {
+      x: Math.cos(theta) * radius,
+      y: Math.sin(theta) * radius,
+    })
+  })
+
+  return centers
+}
+
+function makeClusterForce(
+  centers: Map<number, ClusterCenter>,
+  strength: number,
+) {
+  let nodes: Array<GraphNode & { vx?: number; vy?: number; x?: number; y?: number }> = []
+
+  const force = (alpha: number) => {
+    if (!nodes.length) return
+    for (const n of nodes) {
+      if (n.clusterId == null) continue
+      const center = centers.get(n.clusterId)
+      if (!center) continue
+      const x = n.x ?? 0
+      const y = n.y ?? 0
+      n.vx = (n.vx ?? 0) + (center.x - x) * strength * alpha
+      n.vy = (n.vy ?? 0) + (center.y - y) * strength * alpha
+    }
+  }
+
+  // d3-force calls initialize(nodes) when force is registered.
+  ;(force as unknown as { initialize: (nextNodes: GraphNode[]) => void }).initialize = (nextNodes: GraphNode[]) => {
+    nodes = nextNodes as Array<GraphNode & { vx?: number; vy?: number; x?: number; y?: number }>
+  }
+
+  return force
+}
+
 // Relationship type styling — colors adapt to light/dark mode
 function getRelMeta(lm: boolean): Record<string, { label: string; color: string; emoji: string }> {
   return {
@@ -62,9 +114,10 @@ export default function App() {
   const [activeRebuildJobs, setActiveRebuildJobs] = useState(0)
   const [rebuildProgress, setRebuildProgress] = useState(0)
   const rebuildingGraph = activeRebuildJobs > 0
+  const [pendingAutoRecluster, setPendingAutoRecluster] = useState(false)
 
   // Adding ids
-  const [addingId, setAddingId] = useState<string | null>(null)
+  const [addingIds, setAddingIds] = useState<Set<string>>(new Set())
   const [addedIds, setAddedIds] = useState<Set<string>>(new Set())
   const [clustering, setClustering] = useState(false)
   const effectiveGraphData = useMemo(
@@ -74,6 +127,11 @@ export default function App() {
     }),
     [graphData.links, graphData.nodes, optimisticNodes],
   )
+
+  // Load existing graph data on initial page load.
+  useEffect(() => {
+    void reloadGraph()
+  }, [reloadGraph])
 
   async function waitForIngestJob(jobId: string, timeoutMs = 120000) {
     const start = Date.now()
@@ -145,6 +203,32 @@ export default function App() {
       }
     }
   }, [rebuildProgress, rebuildingGraph])
+
+  useEffect(() => {
+    if (!pendingAutoRecluster || activeRebuildJobs > 0 || clustering) return
+
+    let cancelled = false
+    void (async () => {
+      setClustering(true)
+      try {
+        await rebuildClusters(5)
+        if (!cancelled) {
+          await reloadGraph()
+        }
+      } catch (e) {
+        console.error('Auto recluster failed:', e)
+      } finally {
+        if (!cancelled) {
+          setClustering(false)
+          setPendingAutoRecluster(false)
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeRebuildJobs, clustering, pendingAutoRecluster, reloadGraph])
   // Close dropdown on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -253,15 +337,65 @@ export default function App() {
     return semanticEdge?.reason ?? null
   }, [selectedLink, effectiveGraphData.links])
 
-  if (loading) {
-    return (
-      <main className="app" style={{ display: 'grid', placeItems: 'center' }}>
-        <div style={{ color: 'var(--research-text)' }}>Loading graph...</div>
-      </main>
-    )
-  }
+  useEffect(() => {
+    const graph = fgRef.current
+    if (!graph) return
 
-  const hasGraph = graphData.nodes.length > 0 || loading
+    const centers = buildClusterCenters(
+      visibleGraphData.nodes,
+      viewMode === 'clusters' ? 320 : viewMode === 'papers' ? 260 : 220,
+    )
+    const clusterStrength =
+      viewMode === 'clusters' ? 0.2
+        : viewMode === 'papers' ? 0.02
+          : 0.08
+
+    graph.d3Force('cluster', makeClusterForce(centers, clusterStrength))
+
+    const linkForce = graph.d3Force('link')
+    if (linkForce && typeof linkForce.distance === 'function') {
+      linkForce.distance((link: GraphLink) => {
+        const sourceId = asNodeId(link.source)
+        const targetId = asNodeId(link.target)
+        const sourceNode = visibleGraphData.nodes.find((n) => n.id === sourceId)
+        const targetNode = visibleGraphData.nodes.find((n) => n.id === targetId)
+        const sameCluster =
+          sourceNode?.clusterId != null &&
+          targetNode?.clusterId != null &&
+          sourceNode.clusterId === targetNode.clusterId
+
+        if (viewMode === 'papers') {
+          if (sameCluster) return 130
+          if (link.relationship_type === 'CITES') return 185
+          return 220
+        }
+
+        if (sameCluster) return viewMode === 'clusters' ? 45 : 60
+        if (link.relationship_type === 'CITES') return 95
+        return 120
+      })
+    }
+
+    const chargeForce = graph.d3Force('charge')
+    if (chargeForce && typeof chargeForce.strength === 'function') {
+      chargeForce.strength(
+        viewMode === 'clusters' ? -65
+          : viewMode === 'papers' ? -180
+            : -95,
+      )
+    }
+
+    const collideForce = graph.d3Force('collide')
+    if (collideForce && typeof collideForce.radius === 'function') {
+      collideForce
+        .radius(() => (viewMode === 'papers' ? 16 : 10))
+        .strength(viewMode === 'papers' ? 0.9 : 0.6)
+    }
+
+    graph.d3ReheatSimulation()
+  }, [viewMode, visibleGraphData.links, visibleGraphData.nodes])
+
+  const hasGraph = effectiveGraphData.nodes.length > 0
 
   return (
     <main className="app">
@@ -376,12 +510,16 @@ export default function App() {
                   <button
                     type="button"
                     onMouseDown={(e) => e.preventDefault()}
-                    disabled={addingId === r.paperId || addedIds.has(r.paperId)}
+                    disabled={addingIds.has(r.paperId) || addedIds.has(r.paperId)}
                     onClick={async () => {
                       console.log('externalIds:', JSON.stringify(r.externalIds))
                       const arxivId = r.externalIds?.ArXiv
                       if (!arxivId) return
-                      setAddingId(r.paperId)
+                      setAddingIds((prev) => {
+                        const next = new Set(prev)
+                        next.add(r.paperId)
+                        return next
+                      })
                       try {
                         const ingest = await createIngestion(arxivId)
                         if (ingest.status !== 'processing' && ingest.status !== 'skipped') {
@@ -427,6 +565,7 @@ export default function App() {
                           void waitForIngestJob(jobId)
                             .then(async () => {
                               await reloadGraph()
+                              setPendingAutoRecluster(true)
                               setOptimisticNodes((prev) =>
                                 prev.filter(
                                   (n) => n.title.trim().toLowerCase() !== r.title.trim().toLowerCase(),
@@ -441,7 +580,11 @@ export default function App() {
                       } catch (e) {
                         console.error('Add paper failed:', e)
                       } finally {
-                        setAddingId(null)
+                        setAddingIds((prev) => {
+                          const next = new Set(prev)
+                          next.delete(r.paperId)
+                          return next
+                        })
                       }
                     }}
                     style={{
@@ -454,13 +597,13 @@ export default function App() {
                         : 'transparent',
                       color: addedIds.has(r.paperId) ? '#64ffda' : 'rgba(100,255,218,0.7)',
                       fontSize: 11, fontWeight: 600,
-                      cursor: addingId === r.paperId || addedIds.has(r.paperId)
+                      cursor: addingIds.has(r.paperId) || addedIds.has(r.paperId)
                         ? 'not-allowed' : 'pointer',
                       whiteSpace: 'nowrap',
                       transition: 'all 0.15s',
                     }}
                   >
-                    {addingId === r.paperId ? '…' : addedIds.has(r.paperId) ? '✓ Added' : '+ Add'}
+                    {addingIds.has(r.paperId) ? '…' : addedIds.has(r.paperId) ? '✓ Added' : '+ Add'}
                   </button>
                 </div>
               ))}
@@ -486,11 +629,15 @@ export default function App() {
         </div>
       </header>
       <section className="content">
-        {!hasGraph && !loading ? (
+        {!hasGraph ? (
           <div style={{ flex: 1, display: 'grid', placeItems: 'center', color: 'var(--research-text)', textAlign: 'center', gap: 12 }}>
             <div>
-              <div style={{ fontSize: 18, marginBottom: 8, opacity: 0.7 }}>Enter a topic above and press Enter to explore a research landscape</div>
-              <div style={{ fontSize: 13, opacity: 0.4 }}>e.g. "attention mechanisms", "model quantization", "diffusion models"</div>
+              <div style={{ fontSize: 18, marginBottom: 8, opacity: 0.7 }}>
+                {loading ? 'Loading graph…' : 'Enter a topic above and press Enter to explore a research landscape'}
+              </div>
+              {!loading && (
+                <div style={{ fontSize: 13, opacity: 0.4 }}>e.g. "attention mechanisms", "model quantization", "diffusion models"</div>
+              )}
             </div>
           </div>
         ) : (
@@ -918,7 +1065,13 @@ export default function App() {
                         <div className="metricValue">{neighborIds.size - 1}</div>
                       </div>
                     </div>
-                    <button className="cta" type="button">Explore Abstract</button>
+                    <button
+                      className="cta"
+                      type="button"
+                      onClick={() => setPanelPaper(selectedPaper)}
+                    >
+                      Explore Abstract
+                    </button>
                   </>
                 ) : (
                   <div className="previewEmpty">Click a paper node or pick one from the list.</div>

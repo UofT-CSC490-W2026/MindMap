@@ -13,6 +13,24 @@ export interface SearchResult {
   externalIds?: { ArXiv?: string }
 }
 
+type BackendPaper = {
+  title?: string
+  authors?: string[] | { name?: string }[]
+  year?: number | null
+  citation_count?: number | null
+  citationCount?: number | null
+  arxiv_id?: string | null
+  external_url?: string | null
+  url?: string | null
+  externalIds?: { ArXiv?: string }
+}
+
+function extractArxivId(value: string | null | undefined): string | undefined {
+  if (!value) return undefined
+  const m = value.match(/arxiv\.org\/(?:abs|pdf)\/([0-9]{4}\.[0-9]{4,5})(?:v\d+)?/i)
+  return m?.[1]
+}
+
 export function useSemanticSearch(query: string) {
   const [results, setResults] = useState<SearchResult[]>([])
   const [loading, setLoading] = useState(false)
@@ -40,12 +58,48 @@ export function useSemanticSearch(query: string) {
           fields: 'title,authors,year,citationCount,externalIds',
         })
         const res = await fetchWithFallback(
-          API_BASES.map((base) => `${base}/papers/search?${params}`),
+          API_BASES.map((base) => `${base}/search/papers?${params}`),
           controller.signal,
         )
 
         const json = await res.json()
-        setResults((json.data ?? []).filter((p: SearchResult) => !!p.externalIds?.ArXiv))
+        const rows: BackendPaper[] = Array.isArray(json)
+          ? json
+          : Array.isArray(json?.data)
+            ? json.data
+            : []
+
+        const normalized: SearchResult[] = rows.map((p) => {
+          const arxivId =
+            p.externalIds?.ArXiv ??
+            p.arxiv_id ??
+            extractArxivId(p.external_url) ??
+            extractArxivId(p.url) ??
+            undefined
+
+          const authors = Array.isArray(p.authors)
+            ? p.authors
+                .map((a) => (typeof a === 'string' ? { name: a } : { name: a?.name ?? '' }))
+                .filter((a) => !!a.name)
+            : []
+
+          const citationCount = typeof p.citationCount === 'number'
+            ? p.citationCount
+            : typeof p.citation_count === 'number'
+              ? p.citation_count
+              : 0
+
+          return {
+            paperId: arxivId ?? (p.title || 'unknown'),
+            title: p.title || 'Untitled',
+            authors,
+            year: typeof p.year === 'number' ? p.year : null,
+            citationCount,
+            externalIds: arxivId ? { ArXiv: arxivId } : undefined,
+          }
+        })
+
+        setResults(normalized.filter((p) => !!p.externalIds?.ArXiv))
       } catch (err) {
         if ((err as Error).name !== 'AbortError') setResults([])
       } finally {

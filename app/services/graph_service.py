@@ -19,6 +19,14 @@ from app.services.contracts import (
 from app.utils import connect_to_snowflake
 from app.workers.semantic_search_worker import get_related_papers, semantic_search
 
+SIMILAR_MIN_STRENGTH = 0.8
+
+
+def _edge_passes_threshold(kind: str, strength: float) -> bool:
+    if (kind or "").upper() == "SIMILAR" and float(strength) < SIMILAR_MIN_STRENGTH:
+        return False
+    return True
+
 
 def _fetch_paper_rows(cur, paper_ids: List[int], database: str = DATABASE) -> List[dict]:
     """Fetch Silver + Bronze metadata for a list of paper IDs."""
@@ -110,15 +118,56 @@ def _fetch_edges(cur, paper_ids: List[int], database: str = DATABASE) -> List[Gr
         [int(pid) for pid in paper_ids],
     )
     rows = cur.fetchall()
-    return [
-        GraphLink(
-            source=str(r[0]),
-            target=str(r[1]),
-            kind=str(r[2]) if r[2] else "SIMILAR",
-            strength=float(r[3]) if r[3] is not None else 0.5,
+    links: List[GraphLink] = []
+    for r in rows:
+        kind = str(r[2]) if r[2] else "SIMILAR"
+        strength = float(r[3]) if r[3] is not None else 0.5
+        if not _edge_passes_threshold(kind, strength):
+            continue
+        links.append(
+            GraphLink(
+                source=str(r[0]),
+                target=str(r[1]),
+                kind=kind,
+                strength=strength,
+            )
         )
-        for r in rows
-    ]
+    return links
+
+
+def _keyword_fallback_ids(cur, query: str, limit: int = 20, database: str = DATABASE) -> List[int]:
+    q = (query or "").strip()
+    if not q:
+        return []
+    silver_table = qualify_table("SILVER_PAPERS", database=database)
+    like = f"%{q}%"
+    cur.execute(
+        f"""
+        SELECT "id"
+        FROM {silver_table}
+        WHERE
+            "title" ILIKE %s
+            OR "abstract" ILIKE %s
+        ORDER BY "id" DESC
+        LIMIT %s
+        """,
+        (like, like, int(limit)),
+    )
+    return [int(r[0]) for r in cur.fetchall() if r and r[0] is not None]
+
+
+def _recent_paper_ids(cur, limit: int = 20, database: str = DATABASE) -> List[int]:
+    silver_table = qualify_table("SILVER_PAPERS", database=database)
+    cur.execute(
+        f"""
+        SELECT "id"
+        FROM {silver_table}
+        ORDER BY "id" DESC
+        LIMIT %s
+        """,
+        (int(limit),),
+    )
+    return [int(r[0]) for r in cur.fetchall() if r and r[0] is not None]
 
 
 def _build_node(row: dict) -> GraphNode:
@@ -139,22 +188,26 @@ def _build_node(row: dict) -> GraphNode:
 async def query_graph(query: str) -> GraphResponse:
     """Assemble a query-scoped graph from semantic search + Silver/Gold data."""
     search_results = await semantic_search.remote.aio(
-        query=query, k=20, database=DATABASE
+        query=query, k=20, score_threshold=-1.0, database=DATABASE
     )
     paper_ids = [int(r["id"]) for r in (search_results or []) if r.get("id")]
-
-    if not paper_ids:
-        return GraphResponse(
-            graph_id=str(uuid4()),
-            query=query,
-            nodes=[],
-            links=[],
-            meta=GraphMeta(total_nodes=0, total_links=0, query=query),
-        )
 
     conn = connect_to_snowflake(schema="SILVER", database=DATABASE)
     cur = conn.cursor()
     try:
+        if not paper_ids:
+            paper_ids = _keyword_fallback_ids(cur, query=query, limit=20, database=DATABASE)
+        if not paper_ids:
+            paper_ids = _recent_paper_ids(cur, limit=20, database=DATABASE)
+        if not paper_ids:
+            return GraphResponse(
+                graph_id=str(uuid4()),
+                query=query,
+                nodes=[],
+                links=[],
+                meta=GraphMeta(total_nodes=0, total_links=0, query=query),
+            )
+
         paper_rows = _fetch_paper_rows(cur, paper_ids, database=DATABASE)
         links = _fetch_edges(cur, paper_ids, database=DATABASE)
     finally:
@@ -208,15 +261,20 @@ async def expand_graph(graph_id: str, paper_id: int) -> GraphExpandResponse:
             (int(paper_id),),
         )
         edge_rows = cur.fetchall()
-        new_links = [
-            GraphLink(
-                source=str(r[0]),
-                target=str(r[1]),
-                kind=str(r[2]) if r[2] else "SIMILAR",
-                strength=float(r[3]) if r[3] is not None else 0.5,
+        new_links: List[GraphLink] = []
+        for r in edge_rows:
+            kind = str(r[2]) if r[2] else "SIMILAR"
+            strength = float(r[3]) if r[3] is not None else 0.5
+            if not _edge_passes_threshold(kind, strength):
+                continue
+            new_links.append(
+                GraphLink(
+                    source=str(r[0]),
+                    target=str(r[1]),
+                    kind=kind,
+                    strength=strength,
+                )
             )
-            for r in edge_rows
-        ]
     finally:
         cur.close()
         conn.close()

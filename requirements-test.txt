@@ -10,3 +10,5 @@ arxiv
 feedparser
 requests
 pydantic
+fastapi
+anyio

@@ -3,6 +3,23 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import PaperPanel from '../../../react/src/components/PaperPanel'
 import type { GraphNode } from '../../../react/src/types/graph'
 
+vi.mock('../../../react/src/services/paperDetailService', () => ({
+  getPaperDetail: vi.fn(async () => ({
+    paper_id: 999,
+    title: 'Test Paper',
+    abstract: 'This paper introduces a benchmark and analyzes system behavior.',
+  })),
+  getPaperSummary: vi.fn(async () => ({
+    paper_id: 999,
+    research_question: 'What does the benchmark measure?',
+    methods: ['Controlled evaluation over multiple settings'],
+    main_claims: [],
+    key_findings: ['Performance varies significantly across settings'],
+    limitations: [],
+    conclusion: 'The benchmark exposes important robustness gaps.',
+  })),
+}))
+
 const paper: GraphNode = {
   id: 999,
   title: 'Test Paper',
@@ -20,11 +37,13 @@ describe('PaperPanel', () => {
     vi.unstubAllGlobals()
   })
 
-  it('renders fallback summary for unknown paper id', () => {
+  it('renders structured summary from backend service', async () => {
     render(<PaperPanel paper={paper} lightMode={false} onClose={() => {}} />)
 
     expect(screen.getByText(/paper summary/i)).toBeInTheDocument()
-    expect(screen.getByText(/How can Transformers techniques be applied/i)).toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getByText(/What does the benchmark measure\?/i)).toBeInTheDocument(),
+    )
   })
 
   it('calls onClose when clicking backdrop', () => {
@@ -37,6 +56,7 @@ describe('PaperPanel', () => {
 
   it('sends chat message and renders assistant response', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
       json: async () => ({ reply: 'Assistant reply' }),
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -60,12 +80,13 @@ describe('PaperPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /send/i }))
 
     await waitFor(() =>
-      expect(screen.getByText(/Something went wrong\. Please try again\./i)).toBeInTheDocument(),
+      expect(screen.getByText(/network/i)).toBeInTheDocument(),
     )
   })
 
   it('sends chat message on Enter key', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
       json: async () => ({ reply: 'Enter reply' }),
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -95,6 +116,7 @@ describe('PaperPanel', () => {
     expect(screen.getByRole('button', { name: /send/i })).toBeDisabled()
 
     resolveFetch?.({
+      ok: true,
       json: async () => ({ reply: 'done' }),
     })
     await waitFor(() => expect(screen.getByText('done')).toBeInTheDocument())
@@ -128,14 +150,14 @@ describe('PaperPanel', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
-    resolveFetch?.({ json: async () => ({ reply: 'done' }) })
+    resolveFetch?.({ ok: true, json: async () => ({ reply: 'done' }) })
     await waitFor(() => expect(screen.getByText('done')).toBeInTheDocument())
   })
 
   it('stores session_id from chat response for subsequent messages', async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce({ json: async () => ({ reply: 'First reply', session_id: 'sess-abc' }) })
-      .mockResolvedValueOnce({ json: async () => ({ reply: 'Second reply' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ answer: 'First reply', session_id: 'sess-abc' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ answer: 'Second reply' }) })
     vi.stubGlobal('fetch', fetchMock)
 
     render(<PaperPanel paper={paper} lightMode={false} onClose={() => {}} />)

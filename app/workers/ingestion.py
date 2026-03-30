@@ -94,8 +94,6 @@ def _ss_get_json(url: str, params: dict, timeout: float = 30.0) -> dict:
                 _ss_last_request_ts = time.time()
             continue
 
-        break  # successful (or unretryable) response
-
     try:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:

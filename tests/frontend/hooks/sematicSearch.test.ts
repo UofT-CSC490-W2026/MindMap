@@ -38,7 +38,7 @@ describe('useSemanticSearch', () => {
 
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.results).toHaveLength(1)
-    expect(result.current.results[0].paperId).toBe('1')
+    expect(result.current.results[0].paperId).toBe('1706.03762')
   })
 
   it('handles missing data field by returning empty result list', async () => {
@@ -71,7 +71,7 @@ describe('useSemanticSearch', () => {
 
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(result.current.results[0].paperId).toBe('x')
+    expect(result.current.results[0].paperId).toBe('2201.00001')
   })
 
   it('clears results when non-abort fetch error occurs', async () => {

@@ -19,6 +19,12 @@ interface Props {
   onClose: () => void
 }
 
+function formatField(value: string | string[] | undefined): string {
+  if (!value) return '—'
+  if (Array.isArray(value)) return value.length > 0 ? value.join(' • ') : '—'
+  return value
+}
+
 export default function PaperPanel({ paper, lightMode, onClose }: Props) {
   const accent = lightMode ? '#0070f3' : '#64ffda'
   const bg = lightMode ? '#ffffff' : '#0d1b2e'
@@ -32,11 +38,11 @@ export default function PaperPanel({ paper, lightMode, onClose }: Props) {
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [summaryError, setSummaryError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'summary' | 'chat'>('summary')
-
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
   const [sessionId, setSessionId] = useState<string | undefined>(undefined)
+
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // Load paper detail on mount / paper change
@@ -153,14 +159,14 @@ export default function PaperPanel({ paper, lightMode, onClose }: Props) {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Paper Summary</div>
                   {([
-                    { label: 'Research Question', value: summary.research_question, emoji: '🔍' },
-                    { label: 'Methods', value: summary.methods?.join('; '), emoji: '🔬' },
-                    { label: 'Key Findings', value: summary.key_findings?.join('; '), emoji: '💡' },
-                    { label: 'Conclusion', value: summary.conclusion, emoji: '✅' },
-                  ] as const).filter(s => s.value).map(({ label, value, emoji }) => (
-                    <div key={label} style={{ padding: '12px 14px', background: lightMode ? 'rgba(0,112,243,0.04)' : 'rgba(100,255,218,0.04)', borderRadius: 10, borderLeft: `3px solid ${accent}` }}>
+                    { label: 'Research Question', key: 'research_question' as const, emoji: '🔍' },
+                    { label: 'Methods', key: 'methods' as const, emoji: '🔬' },
+                    { label: 'Key Findings', key: 'key_findings' as const, emoji: '💡' },
+                    { label: 'Conclusion', key: 'conclusion' as const, emoji: '✅' },
+                  ]).filter(s => summary[s.key]).map(({ label, key, emoji }) => (
+                    <div key={key} style={{ padding: '12px 14px', background: lightMode ? 'rgba(0,112,243,0.04)' : 'rgba(100,255,218,0.04)', borderRadius: 10, borderLeft: `3px solid ${accent}` }}>
                       <div style={{ fontSize: 11, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 6 }}>{emoji} {label}</div>
-                      <p style={{ fontSize: 13, color: textPrimary, lineHeight: 1.7, margin: 0 }}>{value}</p>
+                      <p style={{ fontSize: 13, color: textPrimary, lineHeight: 1.7, margin: 0 }}>{formatField(summary[key] ?? undefined)}</p>
                     </div>
                   ))}
                 </div>

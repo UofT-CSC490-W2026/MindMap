@@ -2,8 +2,6 @@ import { useState, useEffect, useRef } from 'react'
 const API_BASES = [
   import.meta.env.VITE_SEARCH_API_URL,
   import.meta.env.VITE_API_URL,
-  'https://benmarlow--mindmap-api-fastapi-app.modal.run',
-  'https://benmarlow--mindmap-pipeline-fastapi-app.modal.run',
 ].filter(Boolean) as string[]
 
 export interface SearchResult {

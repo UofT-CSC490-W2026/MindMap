@@ -39,14 +39,14 @@ def _ensure_qa_logs_table(cur, database: str = DATABASE, schema: str = SCHEMA) -
     cur.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {table} (
-            log_id INT IDENTITY(1,1) PRIMARY KEY,
-            session_id STRING NOT NULL,
-            paper_id INT NOT NULL,
-            role STRING NOT NULL,
-            message TEXT NOT NULL,
-            rewritten_query STRING,
-            cited_chunk_ids VARIANT,
-            created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+            "LOG_ID" INT IDENTITY(1,1) PRIMARY KEY,
+            "SESSION_ID" STRING NOT NULL,
+            "PAPER_ID" INT NOT NULL,
+            "ROLE" STRING NOT NULL,
+            "MESSAGE" TEXT NOT NULL,
+            "REWRITTEN_QUERY" STRING,
+            "CITED_CHUNK_IDS" VARIANT,
+            "CREATED_AT" TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
         )
         """
     )
@@ -63,11 +63,11 @@ def _load_history(
     table = _qa_logs_table(database=database, schema=schema)
     cur.execute(
         f"""
-        SELECT role, message, rewritten_query, cited_chunk_ids
+        SELECT "ROLE", "MESSAGE", "REWRITTEN_QUERY", "CITED_CHUNK_IDS"
         FROM {table}
-        WHERE session_id = %s
-          AND paper_id = %s
-        ORDER BY created_at DESC, log_id DESC
+        WHERE "SESSION_ID" = %s
+          AND "PAPER_ID" = %s
+        ORDER BY "CREATED_AT" DESC, "LOG_ID" DESC
         LIMIT %s
         """,
         (session_id, int(paper_id), int(limit_messages)),
@@ -106,8 +106,8 @@ def _store_message(
     cur.execute(
         f"""
         INSERT INTO {table}
-        (session_id, paper_id, role, message, rewritten_query, cited_chunk_ids)
-        VALUES (%s, %s, %s, %s, %s, PARSE_JSON(%s))
+        ("SESSION_ID", "PAPER_ID", "ROLE", "MESSAGE", "REWRITTEN_QUERY", "CITED_CHUNK_IDS")
+        SELECT %s, %s, %s, %s, %s, PARSE_JSON(%s)
         """,
         (
             session_id,
@@ -195,10 +195,9 @@ def answer_paper_question(
             query_text=rewritten_query,
             top_k=top_k,
             paper_id=paper_id,
-            score_threshold=0.2,
+            score_threshold=0.05,
             max_context_chars=MAX_QA_CONTEXT_CHARS,
             database=database,
-            schema=schema,
         )
 
         if not retrieved_chunks:

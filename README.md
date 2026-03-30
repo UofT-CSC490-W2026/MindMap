@@ -2,401 +2,309 @@
 
 ![Coverage](./coverage.svg)
 
-MindMap is an AI-assisted system for exploring academic literature through semantic retrieval and interactive visualization. Instead of returning a flat list of search results, MindMap helps users understand how papers relate, discover relevant work, and navigate research areas more effectively.
+MindMap is an AI-assisted academic literature explorer that helps researchers understand how papers relate, discover relevant work, and navigate research areas through an interactive graph interface. Instead of returning flat search results, it builds a knowledge graph from ingested papers and exposes it through semantic search, citation-aware retrieval, and a React-based visualization UI. The backend runs as Modal workers and a FastAPI app, Snowflake stores all Bronze/Silver/Gold data and embeddings, and Terraform provisions the Snowflake infrastructure.
 
-## Table of Contents
+---
 
-- [Installation / Getting Started](#installation--getting-started)
-- [Running Tests](#running-tests)
-- [Codebase Overview](#codebase-overview)
-- [Pipeline Overview](#pipeline-overview)
-- [Features](#features)
-- [Architecture](#architecture)
-  - [1. Data Ingestion Layer](#1-data-ingestion-layer)
-  - [2. Representation Layer](#2-representation-layer)
-  - [3. Retrieval Layer](#3-retrieval-layer)
-  - [4. Ranking & Reasoning Layer](#4-ranking--reasoning-layer)
-  - [5. Graph Construction Layer](#5-graph-construction-layer)
-  - [6. Serving Layer](#6-serving-layer)
-  - [7. Infrastructure Layer](#7-infrastructure-layer)
-- [Tech Stack](#tech-stack)
-- [Inspiration](#inspiration)
-- [Status](#status)
+## Demo / Current Status
 
-## Getting Started
+The full pipeline — ingestion through graph construction — is working end-to-end on the `main` branch. The React frontend connects to a deployed Modal API and renders the paper relationship graph. Semantic search, related-paper lookup, and chunk-level RAG retrieval are all functional. Summarization (Step 8) is implemented but skipped by default due to LLM cost.
 
-### Prerequisites
-- Node.js 18+
-- npm
+---
 
-### 1. Quick Start
+## Repository Structure
 
-Use this if you only want to run the UI.
+```
+MindMap/
+├── app/
+│   ├── api/          # FastAPI route handlers
+│   ├── services/     # Business logic (search, graph, ingestion, chat, paper)
+│   ├── workers/      # Modal pipeline workers (ingestion → graph)
+│   ├── config.py     # Modal app/images/secrets + DB constants
+│   ├── main.py       # Pipeline orchestrator (local_entrypoint)
+│   └── server.py     # FastAPI app definition
+├── react/            # Vite + React + TypeScript frontend
+├── tests/
+│   ├── api/          # API route tests
+│   ├── properties/   # Property-based tests (Hypothesis)
+│   └── test_*.py     # Worker and service unit tests
+├── terraform/        # Snowflake infrastructure (IaC)
+└── evals/            # Evaluation scripts and assets
+```
+
+---
+
+## Quick Start
+
+### Path 1 — Frontend Only
+
+Prerequisites: Node.js 18+, npm
 
 ```bash
-# clone the repo
 git clone https://github.com/UofT-CSC490-W2026/MindMap.git
-cd MindMap
-
-# install and run frontend
-cd react
+cd MindMap/react
 npm install
 npm run dev
 ```
 
-Open the local URL shown in your terminal (usually `http://localhost:5173`).
+Open `http://localhost:5173`. The UI will use mock data if `VITE_API_URL` is not set.
 
-### 2. Running the Backend API
+---
 
-The backend runs on Modal. Make sure your `snowflake-creds` secret is set with all required fields:
+### Path 2 — Backend API
+
+Prerequisites: Modal CLI configured (`modal setup`), Snowflake credentials
 
 ```bash
+# Create required Modal secrets
 modal secret create snowflake-creds \
-  SNOWFLAKE_ACCOUNT="<your_account>" \
-  SNOWFLAKE_USER="<your_user>" \
-  SNOWFLAKE_PASSWORD="<your_password>" \
-  SNOWFLAKE_WAREHOUSE="<your_warehouse>" \
+  SNOWFLAKE_ACCOUNT="<account>" \
+  SNOWFLAKE_USER="<user>" \
+  SNOWFLAKE_PASSWORD="<password>" \
+  SNOWFLAKE_WAREHOUSE="MINDMAP_WH" \
   --force
-```
 
-Then serve the API:
+modal secret create openai-api \
+  OPENAI_API_KEY="<key>" --force
 
-```bash
+modal secret create semantic-scholar-api \
+  SEMANTIC_SCHOLAR_API_KEY="<key>" --force
+
+# Serve the API (ephemeral — stops when terminal closes)
 modal serve app/main.py
+
+# Or deploy persistently
+modal deploy app/main.py
 ```
 
-Modal will print a URL like `https://<workspace>--mindmap-pipeline-fastapi-app-dev.modal.run`. Set that in `react/.env`:
+Modal prints a URL like `https://<workspace>--mindmap-pipeline-fastapi-app.modal.run`.
+Set it in `react/.env`:
 
 ```
 VITE_API_URL=https://<your-modal-url>
 ```
 
-Restart the Vite dev server after updating `.env`. Use `modal deploy app/main.py` instead for a persistent deployment that stays up after closing your terminal.
+Restart the Vite dev server after updating `.env`.
 
-### 3. Developer / Admin Setup 
+---
 
-Use this if you are developing backend features or refreshing pipeline data.
+### Path 3 — Full Pipeline / Developer Setup
 
-Additional prerequisites:
-- Python 3.10+
-- uv
-- Modal CLI configured (`modal setup`)
-- Snowflake credentials available through Modal secrets
+Prerequisites: Python 3.10+, `uv`, Modal CLI, Snowflake credentials
 
-Backend setup:
 ```bash
+# Python environment
 uv venv
 source .venv/bin/activate
 uv pip install -r requirements.txt
-```
 
-Modal + Snowflake credential setup:
-
-```bash
-# 1) authenticate Modal (one-time)
+# Authenticate Modal (one-time)
 modal setup
 
-# 2) export Snowflake credentials in your shell
-export SNOWFLAKE_ACCOUNT="<your_account>"
-export SNOWFLAKE_USER="<your_user>"
-export SNOWFLAKE_PASSWORD="<your_password>"
+# Export credentials
+export SNOWFLAKE_ACCOUNT="<account>"
+export SNOWFLAKE_USER="<user>"
+export SNOWFLAKE_PASSWORD="<password>"
 export SNOWFLAKE_WAREHOUSE="MINDMAP_WH"
-export SEMANTIC_SCHOLAR_API_KEY="<your_semantic_scholar_api_key>"
-export OPENAI_API_KEY="<your_openai_api_key>"
+export SEMANTIC_SCHOLAR_API_KEY="<key>"
+export OPENAI_API_KEY="<key>"
 
-# 3) create/update Modal secrets used by workers
-
+# Create Modal secrets
 modal secret create snowflake-creds \
   SNOWFLAKE_ACCOUNT="$SNOWFLAKE_ACCOUNT" \
   SNOWFLAKE_USER="$SNOWFLAKE_USER" \
   SNOWFLAKE_PASSWORD="$SNOWFLAKE_PASSWORD" \
-  SNOWFLAKE_WAREHOUSE="$SNOWFLAKE_WAREHOUSE" \
-  --force
+  SNOWFLAKE_WAREHOUSE="$SNOWFLAKE_WAREHOUSE" --force
 
 modal secret create semantic-scholar-api \
-  SEMANTIC_SCHOLAR_API_KEY="$SEMANTIC_SCHOLAR_API_KEY" \
-  --force
+  SEMANTIC_SCHOLAR_API_KEY="$SEMANTIC_SCHOLAR_API_KEY" --force
 
 modal secret create openai-api \
-  OPENAI_API_KEY="$OPENAI_API_KEY" \
-  --force
+  OPENAI_API_KEY="$OPENAI_API_KEY" --force
 
-# 4) (optional) create HuggingFace secret for gated models
-#    required if using models like Llama 3 that need HF authentication
-#    get your token at https://huggingface.co/settings/tokens
-modal secret create huggingface-secret \
-  HF_TOKEN="<your_huggingface_token>" \
-  --force
+# Optional: HuggingFace token for gated models
+modal secret create huggingface-secret HF_TOKEN="<token>" --force
 
-# 5) verify secrets exist
+# Verify
 modal secret list
 ```
 
-Terraform setup (Snowflake infrastructure):
+Run the full pipeline:
 
 ```bash
-# from repo root
-cd terraform
-
-# 1) initialize terraform
-terraform init
-
-# 2) choose workspace
-# use dev for local testing
-terraform workspace select dev || terraform workspace new dev
-
-# (use prod only when deploying production resources)
-# terraform workspace select prod # uncomment for prod
-
-# 3) create schemas
-# Preferred provider vars
-export TF_VAR_snowflake_organization_name="<your_org_name>" 
-export TF_VAR_snowflake_account_name="<your_account_name>"
-export TF_VAR_snowflake_user="$SNOWFLAKE_USER"
-export TF_VAR_snowflake_password="$SNOWFLAKE_PASSWORD"
-
-# organization_name is optional in this repo because providers.tf supports
-# legacy snowflake_account parsing, but organization_name + account_name is
-# recommended for clearer, future-proof configuration.
-
-# Legacy fallback (supported by this repo's provider compatibility logic)
-# export TF_VAR_snowflake_account="$SNOWFLAKE_ACCOUNT"
-
-terraform plan # preview changes
-terraform apply # apply changes
+modal run app/main.py --query "model quantization" --source semantic_scholar --max-results 20
 ```
 
-Example run:
+Skip expensive early stages on reruns:
 
 ```bash
-QUERY="model quantization"
-
-# run from repo root
-cd /path/to/MindMap
-
-# end-to-end pipeline (matches app/main.py local_entrypoint)
-modal run app/main.py \
-  --query "$QUERY" \
-  --source semantic_scholar \
-  --max-results 5
-
-# rerun without expensive early stages
-modal run app/main.py \
-  --query "$QUERY" \
-  --max-results 50 \
-  --skip-ingestion \
-  --skip-transformation \
-  --skip-ss-id-backfill
-
-# arXiv ingestion source
-modal run app/main.py \
-  --query "graph neural networks" \
-  --source arxiv \
-  --max-results 30
-
-# target a specific Snowflake database
-modal run app/main.py \
-  --query "$QUERY" \
-  --database MINDMAP_DB
-
-# include optional Step 8 summarization (default is skipped)
-modal run app/main.py \
-  --query "$QUERY" \
-  --max-results 20 \
-  --skip-summary false
+modal run app/main.py --query "model quantization" --max-results 50 \
+  --skip-ingestion --skip-transformation --skip-ss-id-backfill
 ```
 
-## Running Tests
-
-### Python (pytest)
-
-Make sure you've activated your virtual environment and installed dependencies first (see [Developer / Admin Setup](#3-developer--admin-setup)).
+Other options:
 
 ```bash
-# run all tests (scoped to the tests/ directory)
+# arXiv source
+modal run app/main.py --query "graph neural networks" --source arxiv --max-results 30
+
+# Target a specific Snowflake database
+modal run app/main.py --query "model quantization" --database MINDMAP_DB
+
+# Enable optional summarization (skipped by default)
+modal run app/main.py --query "model quantization" --max-results 20 --skip-summary false
+```
+
+---
+
+## Configuration
+
+| Variable | Required | Example | Purpose |
+|---|---|---|---|
+| `SNOWFLAKE_ACCOUNT` | Yes | `abc12345.us-east-1` | Snowflake account identifier |
+| `SNOWFLAKE_USER` | Yes | `mindmap_user` | Snowflake login user |
+| `SNOWFLAKE_PASSWORD` | Yes | `...` | Snowflake password |
+| `SNOWFLAKE_WAREHOUSE` | Yes | `MINDMAP_WH` | Compute warehouse |
+| `OPENAI_API_KEY` | Yes | `sk-...` | LLM calls (reasoning, summarization) |
+| `SEMANTIC_SCHOLAR_API_KEY` | Yes | `...` | Paper ingestion from Semantic Scholar |
+| `HF_TOKEN` | No | `hf_...` | HuggingFace token for gated models |
+| `VITE_API_URL` | Frontend | `https://...modal.run` | Modal API URL for the React app |
+| `TF_VAR_snowflake_organization_name` | Terraform | `myorg` | Snowflake org for Terraform provider |
+| `TF_VAR_snowflake_account_name` | Terraform | `myaccount` | Snowflake account for Terraform provider |
+
+All backend secrets are passed to Modal workers via `modal secret create`. The frontend reads `VITE_API_URL` from `react/.env` (copy from `react/.env.example`).
+
+---
+
+## Testing
+
+### Backend
+
+```bash
+# Run all tests
 pytest
 
-# run with coverage report
+# With coverage report
 pytest --cov=app
 
-# run a specific test file
+# Specific file
 pytest tests/test_ingestion.py
 
-# run property-based tests only
+# Property-based tests only
 pytest tests/properties/
 ```
 
-### Frontend (Vitest)
+Backend tests cover all pipeline workers (ingestion, transformation, chunking, embedding, citation, graph, QA, summary, semantic search), API routes, and service-layer logic. Property-based tests use Hypothesis to verify correctness properties across the chat, graph, ingestion, paper, and search services.
+
+### Frontend
 
 ```bash
 cd react
 
-# run all tests once
+# Run all tests
 npm test
 
-# run with coverage
+# With coverage
 npm run test:coverage
 ```
 
-## Codebase Overview
+Frontend tests cover React components (`AddPaperModal`, `PaperPanel`), custom hooks (`useGraphData`, `useIngest`, `semanticSearch`), all service modules (`apiClient`, `graphService`, `ingestionService`, `paperService`, `searchService`, `paperDetailService`), and graph utilities.
 
-```text
-MindMap/
-├── app/                                 # Backend pipeline + API
-│   ├── api.py                           # FastAPI routes
-│   ├── config.py                        # Shared Modal app/images/secrets + DB constants
-│   ├── create_schemas.sql               # Snowflake schema/table bootstrap SQL
-│   ├── main.py                          # Modal local entrypoint pipeline orchestrator
-│   ├── setup_schema.py                  # One-time schema setup runner
-│   ├── useful_prompts.txt               # Prompt templates
-│   ├── utils.py                         # Snowflake connection helper
-│   └── workers/                         # Modal workers by stage
-│       ├── chunking_worker.py
-│       ├── citation_aware_embedding_worker.py
-│       ├── citation_worker.py
-│       ├── embedding_worker.py
-│       ├── graph_worker.py
-│       ├── ingestion.py
-│       ├── reasoning.py
-│       ├── semantic_search_worker.py
-│       ├── summary_worker.py
-│       └── transformation.py
-├── react/                               # Frontend (Vite + React + TypeScript)
-│   ├── src/                             # UI source
-│   └── package.json                     # Frontend scripts/deps
-├── terraform/                           # Infrastructure as Code
-│   ├── main.tf
-│   ├── providers.tf
-│   └── variables.tf
-├── assignments/                         # Course milestone artifacts
-├── evals/                               # Evaluation assets/scripts
-├── finetuning/                          # Fine-tuning assets/scripts
-├── requirements.txt                     # Python dependencies
-└── README.md                            # Project documentation
+---
+
+## Infrastructure and Deployment
+
+### Terraform (Snowflake)
+
+Terraform provisions the Snowflake database, schemas, warehouse, and roles used by the pipeline.
+
+```bash
+cd terraform
+
+# Set provider variables
+export TF_VAR_snowflake_organization_name="<org>"
+export TF_VAR_snowflake_account_name="<account>"
+export TF_VAR_snowflake_user="$SNOWFLAKE_USER"
+export TF_VAR_snowflake_password="$SNOWFLAKE_PASSWORD"
+
+terraform init
+terraform workspace select dev || terraform workspace new dev
+terraform plan
+terraform apply
 ```
 
-## Pipeline Overview
+Use `terraform workspace select prod` for production resources.
 
-MindMap has an offline build pipeline plus online retrieval APIs.
+### Modal (Backend)
 
-Offline pipeline (`modal run app/main.py`):
+```bash
+# Ephemeral serve (stops when terminal closes)
+modal serve app/main.py
 
-1. Ingestion: Pull papers from Semantic Scholar or arXiv into Bronze (`BRONZE_PAPERS`).
-2. Transformation: Normalize Bronze payloads into Silver paper records (`SILVER_PAPERS`) and enrich metadata.
-3. SS-ID backfill: Fill missing Semantic Scholar IDs for existing Silver rows.
-4. Paper embeddings: Compute paper-level vectors and initialize similar-paper caches.
-5. Chunking: Split papers into structured sections/chunks for RAG (`SILVER_PAPER_SECTIONS`, `SILVER_PAPER_CHUNKS`).
-6. Chunk embeddings + neighbor backfill: Embed chunks for dense retrieval and backfill similar IDs for older papers.
-7. Graph build: Materialize Gold-layer relationship edges from citations/similarity.
-8. Summarization (optional): Generate structured paper summaries in Gold via LLM.
+# Persistent deployment
+modal deploy app/main.py
 
-Online retrieval (API/worker path):
+# Run the full offline pipeline
+modal run app/main.py --query "<query>" --source semantic_scholar --max-results 20
+```
 
-1. Related-paper lookup (`get_related_papers`) uses cached neighbors when available and falls back to vector search.
-2. Query semantic search (`semantic_search`) combines vector similarity with lightweight lexical overlap reranking.
-3. RAG chunk retrieval (`retrieve_similar_chunks`) returns top matching chunks for grounded QA/summarization.
+---
 
-The pipeline supports step-level skip flags (`--skip-*`) so maintainers can rerun only changed stages.
-Step 8 summarization is skipped by default (`skip_summary=True`) and can be enabled explicitly when needed.
+## Benchmarking / Reproducibility
 
-## Features
+Pipeline performance was profiled using Python's `cProfile` across the major worker stages. Results are saved in `profile_summary.txt` at the repo root.
 
-- Dual-source ingestion from Semantic Scholar and arXiv into Bronze storage  
-- Idempotent Bronze -> Silver transformation with metadata enrichment/backfills  
-- Paper-level embedding generation with cached similar-paper neighbors  
-- RAG-ready section/chunk generation plus chunk-level dense retrieval  
-- Hybrid semantic search (vector score + lexical overlap rerank)  
-- Knowledge graph edge construction from citation and similarity signals  
-- Configurable step skipping in the pipeline for fast iterative reruns
+To reproduce:
 
-## Architecture
+```bash
+# Profile output is generated during a modal run with profiling enabled in the worker
+# Results are written to profile_summary.txt
+cat profile_summary.txt
+```
 
-MindMap follows a layered retrieval-and-reasoning architecture designed for scalable literature exploration.
+Key findings from the profile:
 
-### 1. Data Ingestion Layer
-Paper metadata is ingested from Semantic Scholar and arXiv into `BRONZE_PAPERS` as raw JSON payloads for traceability and reprocessing. Reruns do not duplicate ingestion.
-Transformation normalizes Bronze records into `SILVER_PAPERS`, with enrichment such as Semantic Scholar IDs and extracted metadata fields.  
+- `build_knowledge_graph` (`_fetch_papers`): ~108s — dominated by a single Snowflake fetch of the full paper set; a candidate for pagination or incremental processing
+- `chunk_papers` (`_fetch_unchunked_papers`): ~73s — full-table scan for unchunked papers; indexing on `chunked` status would reduce this
+- `run_chunk_embedding_batch`: ~45s — network-bound (OpenAI embedding API); batching is already applied, latency is inherent
+- `run_embedding_batch`: ~6.5s — similar network-bound pattern for paper-level embeddings
+- `ingest_from_semantic_scholar`: ~4.6s — dominated by Snowflake write latency across 13 queries
 
-### 2. Representation Layer
-The embedding workers generate paper-level vectors and chunk-level vectors, storing them directly in Silver tables for retrieval and graph construction.
+The main bottleneck is Snowflake I/O in the graph and chunking workers. Snowflake connection setup adds ~4s per worker cold start.
 
-### 3. Retrieval Layer
-Online retrieval supports three paths: related-paper lookup, free-text semantic search, and chunk-level retrieval for RAG.  
-Retrieval uses vector similarity in Snowflake and supports configurable thresholds, candidate pool sizes, and top-k output.
+---
 
-### 4. Ranking & Reasoning Layer
-Ranking is currently a lightweight hybrid strategy that blends vector similarity with token-overlap signals for query search.  
-Reasoning helpers and prompt templates exist for higher-level analysis/summarization workflows, but the core retrieval path is deterministic and data-driven.
+## Architecture / Pipeline Overview
 
-### 5. Graph Construction Layer
-The graph worker materializes `GOLD_PAPER_RELATIONSHIPS` edges from two concrete signals in Silver: citation links and cached similar-paper neighbors.  
-Edges are deduplicated and merged to keep relationship data incremental and consistent across reruns.
+MindMap follows a medallion-style data architecture (Bronze → Silver → Gold) with a separate online serving layer.
 
-### 6. Serving Layer
-Heavy pipeline stages run as Modal jobs through the orchestrator (`app/main.py`) with per-step skip flags for partial reruns. 
+### Offline Pipeline (`modal run app/main.py`)
 
-### 7. Infrastructure Layer
-Snowflake stores Bronze/Silver/Gold data and vectors, while Terraform provisions and manages the database resources/environment setup.  
-Modal provides remote execution for workers, and secrets are managed via Modal Secret resources for secure runtime credentials.
+1. Ingestion — pull papers from Semantic Scholar or arXiv into `BRONZE_PAPERS` as raw JSON
+2. Transformation — normalize Bronze into `SILVER_PAPERS`, enrich metadata, backfill Semantic Scholar IDs
+3. Paper embeddings — compute paper-level vectors, initialize similar-paper neighbor caches
+4. Chunking — split papers into sections/chunks for RAG (`SILVER_PAPER_SECTIONS`, `SILVER_PAPER_CHUNKS`)
+5. Chunk embeddings — embed chunks for dense retrieval, backfill neighbor IDs for older papers
+6. Graph build — materialize `GOLD_PAPER_RELATIONSHIPS` edges from citation links and similarity signals
+7. Summarization (optional) — generate structured Gold-layer summaries via LLM (skipped by default)
 
+Each stage has a `--skip-*` flag for partial reruns.
 
-## Tech Stack
+### Online Retrieval (API)
 
-MindMap is built as a layered ML application rather than a single framework.
+- Related-paper lookup — uses cached neighbors, falls back to vector search
+- Semantic search — vector similarity + lexical overlap reranking
+- Chunk retrieval — top-k chunk matches for grounded QA
 
-### Application Layer
-- **Frontend UI** — interactive visualization and exploration of paper relationships
-- **API layer (Modal endpoints)** — orchestration of retrieval, reranking, and graph construction
+### Serving
 
-### ML & Retrieval
-- **Embedding models (Transformer-based)** — semantic representation of papers and queries  
-- **LLM integration** — contextual reranking, reasoning, and content generation  
-- **Vector similarity search** — candidate retrieval from embedding space
+The FastAPI app (`app/server.py`) is deployed on Modal and exposes REST endpoints consumed by the React frontend. The frontend uses `react-force-graph-2d` to render the paper relationship graph interactively.
 
-### Data Platform
-- **Snowflake** — storage of raw data, normalized metadata, embeddings, and derived features  
-- **Medallion-style tables (Bronze/Silver)** — reproducible ingestion and feature preparation  
-- **Semi-structured storage (VARIANT)** — flexible handling of evolving paper schemas
+---
 
-### Compute & Pipelines
-- **Modal** — batch ingestion, embedding jobs, scheduled refresh, and API serving  
-- **Asynchronous pipelines** — separation of heavy offline processing from online requests
+## Known Limitations / Next Steps
 
-### Infrastructure & DevOps
-- **Terraform** — reproducible provisioning of Snowflake resources and environment configuration  
-- **GitHub** — version control and collaboration  
-- **Environment-based configuration** — secrets and deployment settings management
-
-### Supporting Tooling
-- **Python ecosystem (pandas, requests, etc.)** — ingestion and preprocessing  
-- **Graph construction utilities** — building mind map structure from retrieval outputs  
-- **Logging and monitoring** — debugging and evaluation of retrieval quality
-
-## Inspiration
-
-MindMap draws inspiration from existing platforms that rethink how researchers discover and navigate academic knowledge.
-
-- 🗺️ **Litmaps** — interactive citation maps that visualize how papers connect, helping researchers discover related work and track evolving literature.  
-  https://www.litmaps.com/
-
-- 🔎 **Connected Papers** — visual graphs that reveal relationships between papers and help users explore unfamiliar research areas.  
-  https://www.connectedpapers.com/
-
-- 🧠 **Elicit** — AI-assisted literature review workflows that move beyond keyword search toward structured reasoning over papers.  
-  https://elicit.com/
-
-- 📚 **Semantic Scholar** — rich metadata, citation context, and AI signals that improve academic search and discovery.  
-  https://www.semanticscholar.org/
-
-- 🕸️ **ResearchRabbit** — continuous discovery through recommendation graphs and collection-based exploration.  
-  https://www.researchrabbit.ai/
-
-- ✨ **Perplexity (Academic workflows)** — conversational exploration that blends retrieval with synthesis, influencing how users expect to interact with information.  
-  https://www.perplexity.ai/
-
-MindMap combines ideas from these systems — semantic retrieval, graph exploration, and AI reasoning — into a unified workflow designed for interactive understanding rather than static search.
-
-
-## Status
-
-Active development as part of the CSC490 Machine Learning Engineering capstone at the University of Toronto.
+- All external services (Snowflake, Modal, OpenAI, Semantic Scholar) require active credentials — the system cannot run fully offline
+- Summarization is expensive and skipped by default; enabling it on large paper sets will incur significant LLM cost
+- Graph and chunking workers do full-table scans; large datasets will see increased Snowflake latency
+- The `evals/` directory is present but evaluation scripts are not yet populated

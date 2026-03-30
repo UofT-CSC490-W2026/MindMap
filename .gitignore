@@ -32,8 +32,11 @@ ENV/
 .ruff_cache/
 .coverage
 .coverage.*
+coverage.xml
 htmlcov/
 .hypothesis/
+profile_output.txt
+extract_profile.py
 
 # Jupyter
 .ipynb_checkpoints/

@@ -218,6 +218,7 @@ def test_run_citation_aware_embedding_batch_with_reference_embeddings():
     sys.modules["sentence_transformers"] = types.SimpleNamespace(
         SentenceTransformer=MagicMock(return_value=mock_model)
     )
+    _real_numpy = sys.modules.get("numpy")
     sys.modules["numpy"] = types.SimpleNamespace(
         float32="float32",
         array=lambda values, dtype=None: values,
@@ -230,6 +231,11 @@ def test_run_citation_aware_embedding_batch_with_reference_embeddings():
 
     with patch("workers.citation_aware_embedding_worker.connect_to_snowflake", return_value=mock_conn):
         result = run_citation_aware_embedding_batch(limit=1, alpha=0.75)
+
+    if _real_numpy is not None:
+        sys.modules["numpy"] = _real_numpy
+    else:
+        sys.modules.pop("numpy", None)
 
     assert result["status"] == "ok"
     assert result["updated"] == 1

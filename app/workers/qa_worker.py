@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -169,6 +170,77 @@ def _looks_unrelated(question: str) -> bool:
     return any(keyword in lowered for keyword in UNRELATED_KEYWORDS)
 
 
+def _fallback_answer_from_chunks(retrieved_chunks: List[Dict[str, Any]]) -> str:
+    text = " ".join((chunk.get("chunk_text") or "").strip() for chunk in retrieved_chunks).strip()
+    if not text:
+        return "I couldn't find enough indexed context for this paper yet. Try again in a minute after chunking completes."
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    snippet = " ".join(sentences[:2]) if sentences else text[:420]
+    return f"Based on the paper text I can access: {snippet}"
+
+
+def _fetch_fallback_chunks_from_silver(
+    cur,
+    paper_id: int,
+    database: str = DATABASE,
+    max_chars: int = 8000,
+) -> List[Dict[str, Any]]:
+    """Fallback context when chunk retrieval is empty."""
+    silver_table = qualify_table("SILVER_PAPERS", database=database)
+    col_map = _resolve_table_columns(cur, silver_table)
+    required = ["id", "abstract", "conclusion"]
+    if any(name not in col_map for name in required):
+        return []
+
+    select_cols = [
+        f'{col_map["id"]} AS id',
+        f'{col_map["abstract"]} AS abstract',
+        f'{col_map["conclusion"]} AS conclusion',
+    ]
+    if "tldr" in col_map:
+        select_cols.append(f'{col_map["tldr"]} AS tldr')
+    else:
+        select_cols.append("NULL AS tldr")
+
+    cur.execute(
+        f"""
+        SELECT {", ".join(select_cols)}
+        FROM {silver_table}
+        WHERE {col_map["id"]} = %s
+        LIMIT 1
+        """,
+        (int(paper_id),),
+    )
+    row = cur.fetchone()
+    if not row:
+        return []
+
+    _, abstract, conclusion, tldr = row
+    candidates = [
+        ("abstract", (abstract or "").strip()),
+        ("tldr", (tldr or "").strip()),
+        ("conclusion", (conclusion or "").strip()),
+    ]
+    chunks: List[Dict[str, Any]] = []
+    used_chars = 0
+    base_chunk_id = 9_000_000
+    for idx, (chunk_type, text) in enumerate(candidates, start=1):
+        if not text:
+            continue
+        clipped = text[:2000]
+        if chunks and used_chars + len(clipped) > max_chars:
+            break
+        chunks.append(
+            {
+                "chunk_id": base_chunk_id + idx,
+                "chunk_type": chunk_type,
+                "chunk_text": clipped,
+            }
+        )
+        used_chars += len(clipped)
+    return chunks
+
+
 @app.function(image=rag_image, secrets=[snowflake_secret, openai_secret], timeout=60 * 12)
 def answer_paper_question(
     paper_id: int,
@@ -229,7 +301,18 @@ def answer_paper_question(
         )
 
         if not retrieved_chunks:
-            answer = "The information is not available in the provided paper context."
+            retrieved_chunks = _fetch_fallback_chunks_from_silver(
+                cur,
+                paper_id=paper_id,
+                database=database,
+                max_chars=MAX_QA_CONTEXT_CHARS // 2,
+            )
+            logger.info(
+                f"Paper {paper_id}: retrieval empty, using silver fallback chunks={len(retrieved_chunks)}"
+            )
+
+        if not retrieved_chunks:
+            answer = "I couldn't find enough indexed context for this paper yet. Try again in a minute after chunking completes."
             _store_message(cur, session_id, paper_id, "user", question, rewritten_query=rewritten_query, database=database, schema=schema)
             _store_message(cur, session_id, paper_id, "assistant", answer, cited_chunk_ids=[], database=database, schema=schema)
             conn.commit()
@@ -256,16 +339,22 @@ def answer_paper_question(
             f"(approx_chars={len(context)})"
         )
 
-        llm = LLMClient(model=model_name, max_tokens=900)
-        qa_result = llm.answer_grounded_question(
-            question=rewritten_query,
-            context=context,
-            chunk_ids=chunk_ids,
-            history=formatted_history,
-            retry_count=2,
-        )
-        grounded_answer = qa_result["result"]
-        valid_citations = [chunk_id for chunk_id in grounded_answer.cited_chunk_ids if chunk_id in set(chunk_ids)]
+        try:
+            llm = LLMClient(model=model_name, max_tokens=900)
+            qa_result = llm.answer_grounded_question(
+                question=rewritten_query,
+                context=context,
+                chunk_ids=chunk_ids,
+                history=formatted_history,
+                retry_count=2,
+            )
+            grounded_answer = qa_result["result"]
+            answer_text = grounded_answer.answer
+            valid_citations = [chunk_id for chunk_id in grounded_answer.cited_chunk_ids if chunk_id in set(chunk_ids)]
+        except Exception as llm_error:
+            logger.error(f"Paper {paper_id}: QA LLM failed, using deterministic fallback: {llm_error}")
+            answer_text = _fallback_answer_from_chunks(retrieved_chunks)
+            valid_citations = chunk_ids[:1]
 
         _store_message(cur, session_id, paper_id, "user", question, rewritten_query=rewritten_query, database=database, schema=schema)
         _store_message(
@@ -273,7 +362,7 @@ def answer_paper_question(
             session_id,
             paper_id,
             "assistant",
-            grounded_answer.answer,
+            answer_text,
             cited_chunk_ids=valid_citations,
             database=database,
             schema=schema,
@@ -285,7 +374,7 @@ def answer_paper_question(
             "paper_id": paper_id,
             "session_id": session_id,
             "rewritten_query": rewritten_query if rewritten_query != question else None,
-            "answer": grounded_answer.answer,
+            "answer": answer_text,
             "cited_chunk_ids": valid_citations,
             "chunks_used": len(retrieved_chunks),
         }

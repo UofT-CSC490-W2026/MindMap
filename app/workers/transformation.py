@@ -12,9 +12,12 @@ from app.utils import connect_to_snowflake
 _SS_MIN_INTERVAL_SECONDS = 1.05
 _ss_lock = threading.Lock()
 _ss_last_request_ts = 0.0
-_ARXIV_MIN_INTERVAL_SECONDS = 1.25
+_ARXIV_MIN_INTERVAL_SECONDS = 3.0
 _arxiv_lock = threading.Lock()
 _arxiv_last_request_ts = 0.0
+_ARXIV_REQUEST_HEADERS = {
+    "User-Agent": "MindMap/1.0 (research ingestion; contact: maintainer@mindmap.local)"
+}
 MAX_FULL_TEXT_CHARS = 350000
 FULL_TEXT_PAGE_LIMIT = 80
 CONCLUSION_MAX_WORDS = 500
@@ -127,11 +130,14 @@ def _ss_post_json(url: str, payload: dict, params: dict | None = None, timeout: 
                 f"Response body: {body}"
             ) from None
 
-def _arxiv_get_pdf_bytes(arxiv_id: str, timeout: float = 45.0, max_attempts: int = 5) -> bytes:
+def _arxiv_get_pdf_bytes(arxiv_id: str, timeout: float = 45.0, max_attempts: int = 6) -> bytes:
     import httpx
 
     global _arxiv_last_request_ts
-    pdf_url = f"https://export.arxiv.org/pdf/{arxiv_id}.pdf"
+    pdf_urls = [
+        f"https://export.arxiv.org/pdf/{arxiv_id}.pdf",
+        f"https://arxiv.org/pdf/{arxiv_id}.pdf",
+    ]
     response = None
 
     for attempt in range(max(1, int(max_attempts))):
@@ -140,20 +146,28 @@ def _arxiv_get_pdf_bytes(arxiv_id: str, timeout: float = 45.0, max_attempts: int
             wait = _ARXIV_MIN_INTERVAL_SECONDS - (now - _arxiv_last_request_ts)
             if wait > 0:
                 time.sleep(wait)
+            # Add tiny jitter so parallel jobs across containers are less synchronized.
+            time.sleep(random.uniform(0.05, 0.35))
             _arxiv_last_request_ts = time.time()
 
+        pdf_url = pdf_urls[attempt % len(pdf_urls)]
         try:
-            response = httpx.get(pdf_url, follow_redirects=True, timeout=timeout)
+            response = httpx.get(
+                pdf_url,
+                follow_redirects=True,
+                timeout=timeout,
+                headers=_ARXIV_REQUEST_HEADERS,
+            )
         except httpx.HTTPError as exc:
             if attempt < max_attempts - 1:
-                delay = min(20.0, 1.5 * (2 ** attempt) + random.uniform(0.0, 0.5))
+                delay = min(45.0, 2.0 * (2 ** attempt) + random.uniform(0.25, 1.25))
                 print(f"arXiv PDF request error for {arxiv_id}: {exc}. Retrying in {delay:.2f}s...")
                 time.sleep(delay)
                 continue
             raise RuntimeError(f"arXiv PDF request failed for {arxiv_id}: {exc}") from None
 
         if response.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1:
-            delay = _retry_delay_from_response(response, attempt, base=2.0, cap=30.0)
+            delay = _retry_delay_from_response(response, attempt, base=4.0, cap=90.0)
             print(f"arXiv PDF transient error {response.status_code} for {arxiv_id}; retrying in {delay:.2f}s...")
             time.sleep(delay)
             continue

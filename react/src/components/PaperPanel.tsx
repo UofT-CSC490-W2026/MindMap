@@ -1,5 +1,6 @@
-import { useState, useRef } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import type { GraphNode } from '../types/graph'
+import { getPaperDetail, getPaperSummary } from '../services/paperDetailService'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -10,6 +11,13 @@ interface Props {
   paper: GraphNode
   lightMode: boolean
   onClose: () => void
+}
+
+type SummaryState = {
+  research_question?: string | null
+  methods?: string[] | null
+  key_findings?: string[] | null
+  conclusion?: string | null
 }
 
 export default function PaperPanel({ paper, lightMode, onClose }: Props) {
@@ -25,16 +33,70 @@ export default function PaperPanel({ paper, lightMode, onClose }: Props) {
   const [input, setInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
   const [sessionId, setSessionId] = useState<string | undefined>(undefined)
+  const [abstractText, setAbstractText] = useState<string>('')
+  const [abstractLoading, setAbstractLoading] = useState(false)
+  const [summary, setSummary] = useState<SummaryState | null>(null)
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [summaryError, setSummaryError] = useState<string | null>(null)
 
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // Static fallback summary derived from paper prop
-  const topic = paper.primaryTopic ?? 'this research area'
-  const fallbackSummary = {
-    research_question: `How can ${topic} techniques be applied to improve state-of-the-art results?`,
-    methods: `The paper presents novel approaches within the ${topic} domain.`,
-    key_findings: `Key contributions advance the understanding of ${topic}.`,
-    conclusion: `This work provides meaningful progress in ${topic} research.`,
+  useEffect(() => {
+    let alive = true
+    setAbstractText('')
+    setAbstractLoading(true)
+    void getPaperDetail(String(paper.id))
+      .then((detail) => {
+        if (!alive) return
+        const value = (detail.abstract ?? '').trim()
+        setAbstractText(value)
+      })
+      .catch(() => {
+        if (!alive) return
+        setAbstractText('')
+      })
+      .finally(() => {
+        if (!alive) return
+        setAbstractLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [paper.id])
+
+  useEffect(() => {
+    let alive = true
+    setSummary(null)
+    setSummaryError(null)
+    setSummaryLoading(true)
+    void getPaperSummary(String(paper.id))
+      .then((data) => {
+        if (!alive) return
+        setSummary({
+          research_question: data.research_question ?? null,
+          methods: data.methods ?? null,
+          key_findings: data.key_findings ?? null,
+          conclusion: data.conclusion ?? null,
+        })
+      })
+      .catch((err: unknown) => {
+        if (!alive) return
+        const msg = err instanceof Error ? err.message : 'Summary unavailable'
+        setSummaryError(msg)
+      })
+      .finally(() => {
+        if (!alive) return
+        setSummaryLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [paper.id])
+
+  function formatSummaryValue(v: string | string[] | null | undefined): string {
+    if (!v) return 'No structured summary available yet.'
+    if (Array.isArray(v)) return v.length > 0 ? v.join(' • ') : 'No structured summary available yet.'
+    return v
   }
 
   async function sendMessage() {
@@ -51,10 +113,20 @@ export default function PaperPanel({ paper, lightMode, onClose }: Props) {
         body: JSON.stringify({ question: text, session_id: sessionId ?? null }),
       })
       const data = await res.json()
+      if (!res.ok) {
+        const detail = typeof data?.detail === 'string' ? data.detail : 'Chat request failed.'
+        throw new Error(detail)
+      }
       if (data.session_id) setSessionId(data.session_id)
-      setMessages(prev => [...prev, { role: 'assistant', content: data.reply ?? data.answer ?? '' }])
-    } catch {
-      setMessages(prev => [...prev, { role: 'assistant', content: 'Something went wrong. Please try again.' }])
+      const reply = typeof data.answer === 'string'
+        ? data.answer
+        : typeof data.reply === 'string'
+          ? data.reply
+          : 'No response.'
+      setMessages(prev => [...prev, { role: 'assistant', content: reply }])
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Something went wrong. Please try again.'
+      setMessages(prev => [...prev, { role: 'assistant', content: msg }])
     } finally {
       setChatLoading(false)
     }
@@ -109,7 +181,29 @@ export default function PaperPanel({ paper, lightMode, onClose }: Props) {
         <div style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 0' }}>
           {activeTab === 'summary' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Abstract</div>
+              {abstractLoading ? (
+                <div style={{ fontSize: 13, color: textSecondary, fontStyle: 'italic', padding: '4px 0 10px' }}>
+                  Loading abstract…
+                </div>
+              ) : (
+                <div style={{ padding: '12px 14px', background: lightMode ? 'rgba(0,112,243,0.04)' : 'rgba(100,255,218,0.04)', borderRadius: 10, borderLeft: `3px solid ${accent}` }}>
+                  <p style={{ fontSize: 13, color: textPrimary, lineHeight: 1.7, margin: 0 }}>
+                    {abstractText || 'No abstract available for this paper.'}
+                  </p>
+                </div>
+              )}
               <div style={{ fontSize: 11, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Paper Summary</div>
+              {summaryLoading && (
+                <div style={{ fontSize: 13, color: textSecondary, fontStyle: 'italic', padding: '4px 0 10px' }}>
+                  Loading structured summary…
+                </div>
+              )}
+              {!summaryLoading && summaryError && (
+                <div style={{ fontSize: 13, color: textSecondary, fontStyle: 'italic', padding: '4px 0 10px' }}>
+                  No structured summary available yet.
+                </div>
+              )}
               {([
                 { label: 'Research Question', key: 'research_question' as const, emoji: '🔍' },
                 { label: 'Methods', key: 'methods' as const, emoji: '🔬' },
@@ -118,7 +212,9 @@ export default function PaperPanel({ paper, lightMode, onClose }: Props) {
               ]).map(({ label, key, emoji }) => (
                 <div key={key} style={{ padding: '12px 14px', background: lightMode ? 'rgba(0,112,243,0.04)' : 'rgba(100,255,218,0.04)', borderRadius: 10, borderLeft: `3px solid ${accent}` }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 6 }}>{emoji} {label}</div>
-                  <p style={{ fontSize: 13, color: textPrimary, lineHeight: 1.7, margin: 0 }}>{fallbackSummary[key]}</p>
+                  <p style={{ fontSize: 13, color: textPrimary, lineHeight: 1.7, margin: 0 }}>
+                    {formatSummaryValue(summary?.[key])}
+                  </p>
                 </div>
               ))}
             </div>

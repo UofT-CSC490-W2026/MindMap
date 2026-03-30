@@ -140,11 +140,15 @@ async def get_relationships():
         """)
         rels = []
         for r in cur.fetchall():
+            rel_type = str(r[2]) if r[2] else "SIMILAR"
+            strength = float(r[3]) if r[3] else 0.5
+            if rel_type.upper() == "SIMILAR" and strength < 0.8:
+                continue
             rels.append({
                 "source_paper_id": int(r[0]),
                 "target_paper_id": int(r[1]),
-                "relationship_type": str(r[2]) if r[2] else "SIMILAR",
-                "strength": float(r[3]) if r[3] else 0.5,
+                "relationship_type": rel_type,
+                "strength": strength,
                 "reason": r[4] if has_reason else None,
             })
         return rels

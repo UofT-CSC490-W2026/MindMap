@@ -48,26 +48,30 @@ There are three paths depending on what you need:
 
 | Path | Who it's for |
 |---|---|
-| Path 1 — Frontend only | Browsing the UI locally with mock data |
-| Path 2 — Backend API | Deploying or serving the live backend (team members only) |
-| Path 3 — Full pipeline | Running the data pipeline or developing backend features |
+| Path 1 — Frontend | Graders, reviewers, or anyone running the app locally |
+| Path 2 — Backend API | Team members deploying or serving the backend |
+| Path 3 — Full pipeline | Team members running the data pipeline or developing backend features |
 
-**Graders/reviewers:** you don't need any of these. The live app is already deployed — see [Demo / Grading](#demo--grading) above.
+**Graders/reviewers:** start with Path 1. The backend is already deployed — you just need to run the frontend locally and point it at the live API.
 
 ---
 
-### Path 1 — Frontend Only (local, mock data)
+### Path 1 — Frontend (connects to live backend)
+
+The frontend talks to the already-deployed Modal backend and reads from our Snowflake database. No backend setup needed.
 
 Prerequisites: Node.js 18+, npm
 
 ```bash
 git clone https://github.com/UofT-CSC490-W2026/MindMap.git
 cd MindMap/react
+cp .env.example .env
+# Set VITE_API_URL to the deployed Modal URL in .env
 npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. The UI will use mock data if `VITE_API_URL` is not set. To point it at the live backend, add `VITE_API_URL=<deployed-modal-url>` to `react/.env` before running.
+Open `http://localhost:5173`. The app will query the live API and return real data from Snowflake.
 
 ---
 

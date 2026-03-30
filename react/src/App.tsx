@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import ForceGraph2D from 'react-force-graph-2d'
 import { useGraphData } from './hooks/useGraphData'
 import { useSemanticSearch } from './hooks/sematicSearch'
@@ -83,6 +83,7 @@ function getRelMeta(lm: boolean): Record<string, { label: string; color: string;
 
 export default function App() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(undefined)
   const progressTimerRef = useRef<number | null>(null)
@@ -90,6 +91,16 @@ export default function App() {
   const rebuildStartedAtRef = useRef<number | null>(null)
   const { data: graphData, loading, search: searchGraph, reload: reloadGraph } = useGraphData()
   const optimisticIdRef = useRef(-1)
+
+  // Auto-load graph from ?q= param (e.g. navigated from gallery)
+  useEffect(() => {
+    const q = searchParams.get('q')
+    if (q) {
+      setQuery(q)
+      void searchGraph(q)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [optimisticNodes, setOptimisticNodes] = useState<GraphNode[]>([])
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<number | null>(null)

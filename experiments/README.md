@@ -33,6 +33,7 @@ Outputs:
 - `experiments/results/kg/kg_auto_per_anchor.csv`
 - `experiments/results/kg/kg_detailed_results.json`
 - `experiments/results/kg_bridge_candidates.csv`
+- `experiments/results/kg/intermediate/`
 
 ### RAG + LLM
 
@@ -68,15 +69,38 @@ Outputs:
 - `experiments/results/rag/rag_per_question.csv`
 - `experiments/results/rag/rag_outputs.json`
 - `experiments/results/rag_human_eval.csv`
+- `experiments/results/rag/intermediate/`
 
 ## Backend Reuse Map
 
-- Snowflake access: `app.utils.connect_to_snowflake`
-- Table qualification: `app.config.qualify_table`
-- Citation resolution: `app.workers.graph_worker._citation_targets`
-- Chunk retrieval: `app.workers.semantic_search_worker.retrieve_similar_chunks_local`
+- Local experiment wrappers: `experiments/common.py`
+- Citation resolution logic: aligned with `app.workers.graph_worker._citation_targets`
+- Chunk retrieval logic: aligned with `app.workers.semantic_search_worker.retrieve_similar_chunks_local`
 - Chunk formatting: `app.services.prompt_templates.format_chunk_context`
 - LLM calls: `app.services.llm_client.LLMClient`
+
+The experiment package intentionally uses local wrappers for Snowflake access and table qualification so the scripts can run outside the Modal production runtime while still following the same backend logic.
+
+## Setup
+
+Local dependencies typically needed for these scripts:
+
+- `snowflake-connector-python`
+- `sentence-transformers`
+- `httpx`
+- `tqdm`
+
+Environment variables:
+
+- `SNOWFLAKE_ACCOUNT`
+- `SNOWFLAKE_USER`
+- `SNOWFLAKE_PASSWORD`
+- `OPENAI_API_KEY`
+
+Optional overrides:
+
+- `SNOWFLAKE_DATABASE`
+- `SNOWFLAKE_WAREHOUSE`
 
 ## Running
 
@@ -100,6 +124,8 @@ python -m experiments.rag.run_rag_eval \
   --top-k 5 \
   --runs-per-question 3
 ```
+
+`--max-questions` limits the run by question rows, not by unique papers. For example, if the CSV contains four questions per paper, `--max-questions 24` corresponds to six papers.
 
 ## Commands We Used
 
@@ -204,6 +230,8 @@ Then run:
 python -m experiments.kg.summarize_bridge experiments/results/kg_bridge_candidates.csv
 ```
 
+This writes `experiments/results/kg_bridge_summary.csv`.
+
 ### RAG answer review
 
 Annotate `experiments/results/rag_human_eval.csv` with a `score` column using:
@@ -220,9 +248,11 @@ python -m experiments.rag.summarize_human experiments/results/rag_human_eval.csv
 
 Tie handling for `win_rate` is deterministic: tied top-scoring methods split the win equally for that paper-question pair.
 
+This writes `experiments/results/rag_human_summary.csv`.
+
 ## Assumptions And Limitations
 
 - KG metrics exclude citations that cannot be resolved to local `SILVER_PAPERS.id` values.
 - OpenAI models require `OPENAI_API_KEY`.
 - Sentence-transformer similarity scoring uses `all-MiniLM-L12-v2`.
-- `rag_questions.csv` is scaffolded with a header only; populate it before running the RAG evaluation pipeline.
+- `rag_questions.csv` must contain valid `paper_id,question_id,question_text` rows before running the RAG evaluation pipeline.

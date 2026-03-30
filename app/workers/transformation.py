@@ -17,6 +17,8 @@ _arxiv_lock = threading.Lock()
 _arxiv_last_request_ts = 0.0
 MAX_FULL_TEXT_CHARS = 350000
 FULL_TEXT_PAGE_LIMIT = 80
+CONCLUSION_MAX_WORDS = 500
+CONCLUSION_MAX_PARAGRAPHS = 6
 
 
 def _retry_delay_from_response(response, attempt: int, base: float = 1.5, cap: float = 20.0) -> float:
@@ -363,6 +365,41 @@ def _truncate_text(text: str, max_chars: int = MAX_FULL_TEXT_CHARS) -> str:
     return text[:max_chars].rsplit(" ", 1)[0].strip()
 
 
+def _normalize_paragraph_block(raw_text: str) -> List[str]:
+    """Convert PDF-style line wraps into clean paragraphs.
+
+    Keeps paragraph boundaries on blank lines while collapsing single newlines
+    inside a paragraph to spaces.
+    """
+    if not raw_text:
+        return []
+
+    text = re.sub(r"\r\n?", "\n", raw_text)
+    chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n", text) if chunk.strip()]
+
+    paragraphs: List[str] = []
+    for chunk in chunks:
+        lines = [ln.strip() for ln in chunk.split("\n") if ln.strip()]
+        if not lines:
+            continue
+        paragraph = " ".join(lines)
+        paragraph = re.sub(r"\s+", " ", paragraph).strip()
+        if paragraph:
+            paragraphs.append(paragraph)
+    return paragraphs
+
+
+def _looks_like_reference_paragraph(paragraph: str) -> bool:
+    lower = paragraph.lower()
+    if re.match(r"^\[\d+\]", paragraph):
+        return True
+    if re.match(r"^\d+\.\s", paragraph):
+        return True
+    if "doi:" in lower or "arxiv:" in lower:
+        return True
+    return False
+
+
 def _extract_conclusion_from_text(full_text: str) -> str:
     if not full_text:
         return ""
@@ -381,16 +418,18 @@ def _extract_conclusion_from_text(full_text: str) -> str:
     ]
 
     start_idx = -1
+    heading_end = -1
     for pattern in conclusion_patterns:
         match = re.search(pattern, full_text, re.IGNORECASE)
         if match:
             start_idx = match.start()
+            heading_end = match.end()
             break
 
     if start_idx == -1:
         return ""
 
-    text_after_start = full_text[start_idx:]
+    text_after_start = full_text[heading_end:]
     end_idx = len(text_after_start)
 
     for pattern in stop_patterns:
@@ -399,9 +438,38 @@ def _extract_conclusion_from_text(full_text: str) -> str:
             end_idx = match.start()
 
     conclusion_raw = text_after_start[:end_idx]
-    clean_text = re.sub(r"\$.*?\$", "", conclusion_raw)
-    clean_text = clean_text.replace("\n", " ")
-    return " ".join(clean_text.split())
+    conclusion_raw = re.sub(r"\$.*?\$", "", conclusion_raw)
+
+    paragraphs = _normalize_paragraph_block(conclusion_raw)
+    if not paragraphs:
+        return ""
+
+    kept: List[str] = []
+    total_words = 0
+    for paragraph in paragraphs:
+        # Skip noisy short fragments and bibliography-like lines.
+        if len(paragraph) < 60:
+            continue
+        if _looks_like_reference_paragraph(paragraph):
+            continue
+
+        words = len(paragraph.split())
+        if words < 10:
+            continue
+        if total_words + words > CONCLUSION_MAX_WORDS:
+            break
+
+        kept.append(paragraph)
+        total_words += words
+        if len(kept) >= CONCLUSION_MAX_PARAGRAPHS:
+            break
+
+    if not kept:
+        # Last-resort fallback keeps continuity while avoiding hard line-break artifacts.
+        fallback = " ".join(" ".join(paragraphs).split())
+        return _truncate_text(fallback, max_chars=1800)
+
+    return "\n\n".join(kept)
 
 
 @app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret], max_containers=1, timeout=60 * 4)
@@ -641,10 +709,11 @@ def transform_to_silver(
         except Exception:
             pass
 
-    if not tldr_text:
-        tldr_text = conclusion_text or extract_conclusion.local(arxiv_id)
+    if not conclusion_text:
+        conclusion_text = extract_conclusion.local(arxiv_id)
 
-    final_conclusion = tldr_text or conclusion_text
+    # Final fallback for conclusion field uses TLDR only when full-text extraction fails.
+    final_conclusion = conclusion_text or tldr_text
 
     conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
@@ -790,7 +859,7 @@ def transform_to_silver(
 
 # Provides a list of arxiv_ids in the bronze layer to be processed into silver
 @app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret], max_containers=5)
-def get_bronze_worklist(database: str = DATABASE):
+def get_bronze_worklist(force_reprocess: bool = False, database: str = DATABASE):
     conn = connect_to_snowflake(database=database, schema="SILVER")
     cur = conn.cursor()
     payload_col = _resolve_bronze_payload_column(cur, database=database)
@@ -805,9 +874,11 @@ def get_bronze_worklist(database: str = DATABASE):
     cur.execute(f'SELECT {payload_col}:entry_id::STRING FROM {_bronze_papers_table(database=database)}')
     rows = cur.fetchall()
     
-    # Optional: Filter out papers already in Silver to avoid redundant work
-    cur.execute(f'SELECT {silver_cols["arxiv_id"]} FROM {silver_table}')
-    existing_ids = {row[0] for row in cur.fetchall()}
+    existing_ids = set()
+    if not force_reprocess:
+        # Default mode: skip papers already in Silver.
+        cur.execute(f'SELECT {silver_cols["arxiv_id"]} FROM {silver_table}')
+        existing_ids = {row[0] for row in cur.fetchall()}
     cur.close()
     conn.close()
 
@@ -821,8 +892,8 @@ def get_bronze_worklist(database: str = DATABASE):
     return arxiv_ids
 
 @app.function(image=image, secrets=[snowflake_secret, semantic_scholar_secret], max_containers=1, timeout=60*30)
-def main(parallel=1, database: str = DATABASE):
-    ids_to_process = get_bronze_worklist.remote(database=database)
+def main(parallel=1, force_reprocess: bool = False, database: str = DATABASE):
+    ids_to_process = get_bronze_worklist.remote(force_reprocess=force_reprocess, database=database)
     print(f"DEBUG: Found {len(ids_to_process)} papers to process.")
 
     if not ids_to_process:

@@ -7,6 +7,7 @@ MindMap is an AI-assisted system for exploring academic literature through seman
 ## Table of Contents
 
 - [Installation / Getting Started](#installation--getting-started)
+- [Running Tests](#running-tests)
 - [Codebase Overview](#codebase-overview)
 - [Pipeline Overview](#pipeline-overview)
 - [Features](#features)
@@ -203,6 +204,38 @@ modal run app/main.py \
   --query "$QUERY" \
   --max-results 20 \
   --skip-summary false
+```
+
+## Running Tests
+
+### Python (pytest)
+
+Make sure you've activated your virtual environment and installed dependencies first (see [Developer / Admin Setup](#3-developer--admin-setup)).
+
+```bash
+# run all tests (scoped to the tests/ directory)
+pytest
+
+# run with coverage report
+pytest --cov=app
+
+# run a specific test file
+pytest tests/test_ingestion.py
+
+# run property-based tests only
+pytest tests/properties/
+```
+
+### Frontend (Vitest)
+
+```bash
+cd react
+
+# run all tests once
+npm test
+
+# run with coverage
+npm run test:coverage
 ```
 
 ## Codebase Overview

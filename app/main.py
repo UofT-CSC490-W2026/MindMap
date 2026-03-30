@@ -1,6 +1,6 @@
 import modal
 
-from app.config import app, snowflake_secret
+from app.config import app, snowflake_secret, semantic_scholar_secret, openai_secret
 
 # Import all workers at module level so Modal registers them in the same app context
 from app.workers import embedding_worker, graph_worker, ingestion, transformation  # noqa: F401
@@ -15,7 +15,7 @@ api_image = (
 )
 
 
-@app.function(image=api_image, secrets=[snowflake_secret], timeout=60 * 20)
+@app.function(image=api_image, secrets=[snowflake_secret, semantic_scholar_secret, openai_secret], timeout=60 * 20)
 @modal.asgi_app()
 def fastapi_app():
     from fastapi import FastAPI

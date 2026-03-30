@@ -33,7 +33,7 @@ jobs:
 
       - name: Run pytest with coverage
         run: |
-          PYTHONPATH=. pytest tests \
+          PYTHONPATH=.:app pytest tests \
             --cov=app/workers \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \

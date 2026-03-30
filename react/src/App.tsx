@@ -58,7 +58,7 @@ export default function App() {
   // Dropdown state
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const searchWrapRef = useRef<HTMLDivElement>(null)
-  const { results: searchResults, loading: searchLoading } = useSemanticSearch(query)
+  const { results: searchResults, totalFound: searchTotalFound, loading: searchLoading } = useSemanticSearch(query)
   const [activeRebuildJobs, setActiveRebuildJobs] = useState(0)
   const [rebuildProgress, setRebuildProgress] = useState(0)
   const rebuildingGraph = activeRebuildJobs > 0
@@ -301,12 +301,22 @@ export default function App() {
             )}
           </div>
 
-          {dropdownOpen && searchResults.length > 0 && (
+          {dropdownOpen && !searchLoading && query.trim().length >= 2 && (searchResults.length > 0 || searchTotalFound > 0) && (
             <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, right: 0, background: '#0d2137', border: `1px solid ${lightMode ? 'rgba(0,112,243,0.18)' : 'rgba(100,255,218,0.18)'}`, borderRadius: 10, zIndex: 1000, overflow: 'hidden', boxShadow: '0 16px 48px rgba(0,0,0,0.55)' }}>
               <div style={{ padding: '8px 16px', fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: lightMode ? '#0070f3' : '#64ffda', borderBottom: `1px solid ${lightMode ? 'rgba(0,112,243,0.08)' : 'rgba(100,255,218,0.08)'}`, background: lightMode ? 'rgba(0,112,243,0.04)' : 'rgba(100,255,218,0.04)' }}>
                 Top results from Semantic Scholar
               </div>
-              {searchResults.map((r, i) => (
+
+              {searchResults.length === 0 ? (
+                <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ fontSize: 13, color: lightMode ? '#1a202c' : '#e6f0ff', fontWeight: 500 }}>
+                    {searchTotalFound} result{searchTotalFound !== 1 ? 's' : ''} found, but none have arXiv IDs
+                  </div>
+                  <div style={{ fontSize: 12, color: lightMode ? '#4a5568' : '#8892b0', lineHeight: 1.6 }}>
+                    MindMap supports papers published on arXiv. This topic's results are typically published in journals without arXiv preprints and can't be added to the graph.
+                  </div>
+                </div>
+              ) : searchResults.map((r, i) => (
                 <div
                   key={r.paperId}
                   style={{

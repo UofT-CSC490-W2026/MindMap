@@ -503,7 +503,7 @@ def ingest_single_paper(arxiv_id: str, database: str = DATABASE):
 
 # ADD THIS - Required for CLI to work!
 @app.local_entrypoint()
-def main(query: str, max_results: int = 5, source: str = "semantic_scholar"):
+def ingest(query: str, max_results: int = 5, source: str = "semantic_scholar"):
     """CLI entry point for running ingestion from terminal."""
     if source == "semantic_scholar":
         result = ingest_from_semantic_scholar.remote(query=query, max_results=max_results)

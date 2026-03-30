@@ -1,0 +1,7 @@
+chunking_s,chunk_embed_s,papers_inserted,transform_s,run,graph_s,edges_merged,cache_speedup,query,ingestion_s,embedding_s,total_s,max_results,papers_skipped
+8.39,16.69,—,169.74,fresh,98.07,5,,model quantization,10.99,25.6,329.5,3,—
+7.95,13.27,—,255.02,fresh,96.88,26,,graph neural networks,12.16,29.05,414.34,3,—
+10.28,18.46,—,289.5,fresh,93.05,47,,retrieval augmented generation,12.56,26.28,450.14,3,—
+skipped,skipped,,14.88,cached,skipped,—,1.1x faster,model quantization,10.01,skipped,24.89,3,
+skipped,skipped,,3.55,cached,skipped,—,2.9x faster,graph neural networks,4.25,skipped,7.8,3,
+skipped,skipped,,3.0,cached,skipped,—,3.1x faster,retrieval augmented generation,4.1,skipped,7.1,3,

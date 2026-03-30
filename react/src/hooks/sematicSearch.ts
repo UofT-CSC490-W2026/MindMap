@@ -15,6 +15,7 @@ export interface SearchResult {
 
 export function useSemanticSearch(query: string) {
   const [results, setResults] = useState<SearchResult[]>([])
+  const [totalFound, setTotalFound] = useState(0)
   const [loading, setLoading] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -23,6 +24,7 @@ export function useSemanticSearch(query: string) {
 
     if (!q || q.length < 2) {
       setResults([])
+      setTotalFound(0)
       return
     }
 
@@ -36,7 +38,7 @@ export function useSemanticSearch(query: string) {
       try {
         const params = new URLSearchParams({
           query: q,
-          limit: '10',                         // top 10 results
+          limit: '10',
           fields: 'title,authors,year,citationCount,externalIds',
         })
         const res = await fetchWithFallback(
@@ -45,9 +47,15 @@ export function useSemanticSearch(query: string) {
         )
 
         const json = await res.json()
-        setResults((json.data ?? []).filter((p: SearchResult) => !!p.externalIds?.ArXiv))
+        const all: SearchResult[] = json.data ?? []
+        const withArxiv = all.filter((p: SearchResult) => !!p.externalIds?.ArXiv)
+        setTotalFound(all.length)
+        setResults(withArxiv)
       } catch (err) {
-        if ((err as Error).name !== 'AbortError') setResults([])
+        if ((err as Error).name !== 'AbortError') {
+          setResults([])
+          setTotalFound(0)
+        }
       } finally {
         setLoading(false)
       }
@@ -59,7 +67,7 @@ export function useSemanticSearch(query: string) {
     }
   }, [query])
 
-  return { results, loading }
+  return { results, totalFound, loading }
 }
 
 export async function fetchWithFallback(urls: string[], signal: AbortSignal): Promise<Response> {

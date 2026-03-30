@@ -326,7 +326,7 @@ def retrieve_similar_chunks_local(
     model_name: str = "sentence-transformers/all-MiniLM-L12-v2",
     max_context_chars: int = 20000,
     database: str = DATABASE,
-    schema: str = SCHEMA,
+    schema: str = "SILVER",
 ) -> List[Dict[str, Any]]:
     """
     Local helper for paper-scoped retrieval with bounded returned context.

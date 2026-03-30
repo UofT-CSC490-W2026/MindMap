@@ -9,7 +9,7 @@ import json
 import os
 import modal
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
@@ -143,7 +143,7 @@ async def get_relationships():
     conn = connect_to_snowflake(schema="GOLD")
     cur = conn.cursor()
     try:
-        gold_table = qualify_table("GOLD_CONNECTIONS", database=DATABASE)
+        gold_table = qualify_table("GOLD_PAPER_RELATIONSHIPS", database=DATABASE)
         cur.execute(f"DESC TABLE {gold_table}")
         columns = {str(row[0]).lower() for row in cur.fetchall() if row and row[0]}
         has_reason = "reason" in columns
@@ -453,3 +453,64 @@ def ingest_paper(req: IngestRequest) -> Dict[str, Any]:
         return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
+
+
+@api.get("/papers/summary/{paper_id}")
+async def get_paper_summary(paper_id: str):
+    try:
+        pid = int(paper_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid paper_id")
+    conn = connect_to_snowflake(schema="GOLD")
+    cur = conn.cursor()
+    try:
+        summaries_table = qualify_table("GOLD_PAPER_SUMMARIES", database=DATABASE)
+        # Check table exists first
+        cur.execute(f"SHOW TABLES LIKE 'GOLD_PAPER_SUMMARIES' IN SCHEMA {DATABASE}.GOLD")
+        if cur.fetchone() is None:
+            return {"summary": None, "found": False, "reason": "table_missing"}
+        cur.execute(
+            f'SELECT "summary_json" FROM {summaries_table} WHERE "paper_id" = %s LIMIT 1',
+            (pid,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {"summary": None, "found": False, "reason": "no_summary"}
+        raw = row[0]
+        if isinstance(raw, str):
+            try:
+                data = json.loads(raw)
+            except Exception:
+                return {"summary": None, "found": False, "reason": "invalid_json"}
+        elif isinstance(raw, dict):
+            data = raw
+        else:
+            return {"summary": None, "found": False, "reason": "invalid_type"}
+        return data
+    finally:
+        cur.close()
+        conn.close()
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class PaperChatRequest(BaseModel):
+    paper_id: int
+    question: str
+    session_id: Optional[str] = None
+
+@api.post("/api/paper-chat")
+async def paper_chat(req: PaperChatRequest):
+    try:
+        from app.workers.qa_worker import answer_paper_question
+        result = await answer_paper_question.remote.aio(
+            paper_id=req.paper_id,
+            question=req.question,
+            session_id=req.session_id,
+            database=DATABASE,
+        )
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"QA failed: {exc}") from exc

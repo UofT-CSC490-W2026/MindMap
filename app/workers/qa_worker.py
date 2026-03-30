@@ -245,7 +245,7 @@ def _fetch_fallback_chunks_from_silver(
 def answer_paper_question(
     paper_id: int,
     question: str,
-    session_id: str | None = None,
+    session_id: Optional[str] = None,
     top_k: int = 6,
     model_name: str = "gpt-4o-mini",
     database: str = DATABASE,

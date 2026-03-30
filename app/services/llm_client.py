@@ -1,38 +1,80 @@
-"""LLM client wrapper for structured paper summarization."""
+"""LLM client wrapper for structured and freeform research LLM calls."""
 
 import json
 import logging
 import os
 import time
-from typing import Optional, Type
+from typing import Any, Optional, Type, TYPE_CHECKING
 
-import httpx
-from pydantic import BaseModel, ValidationError
+try:
+    import httpx
+except ModuleNotFoundError:
+    class _HTTPXCompat:
+        class TimeoutException(Exception):
+            """Fallback timeout exception when httpx is unavailable."""
+        Client = None
 
-from app.services.summary_schema import PaperSummary
-from app.services.qa_schema import GroundedAnswer
-from app.services.prompt_templates import (
-    build_grounded_qa_prompt,
-    build_query_rewrite_prompt,
-    build_summary_extraction_prompt,
-)
+    httpx = _HTTPXCompat()
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
+else:
+    BaseModel = Any
+
+try:
+    from app.services.prompt_templates import (
+        build_grounded_qa_prompt,
+        build_query_rewrite_prompt,
+        build_summary_extraction_prompt,
+    )
+except ModuleNotFoundError:
+    from services.prompt_templates import (
+        build_grounded_qa_prompt,
+        build_query_rewrite_prompt,
+        build_summary_extraction_prompt,
+    )
 
 logger = logging.getLogger(__name__)
 
-# OpenAI constants
+# OpenAI API constants
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_TEMPERATURE = 0.3  # Low temperature for consistency
 DEFAULT_MAX_TOKENS = 1500
 DEFAULT_TIMEOUT_SECONDS = 45.0
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a careful research assistant. Follow the user's grounding constraints "
+    "exactly and never use information outside the provided context."
+)
+
+
+def _load_pydantic():
+    try:
+        from pydantic import ValidationError
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pydantic is required for structured LLM workflows. "
+            "Install it to use summary generation or grounded QA."
+        ) from exc
+    return ValidationError
+
+
+def _load_structured_models():
+    try:
+        from app.services.summary_schema import PaperSummary
+        from app.services.qa_schema import GroundedAnswer
+    except ModuleNotFoundError:
+        from services.summary_schema import PaperSummary
+        from services.qa_schema import GroundedAnswer
+    return PaperSummary, GroundedAnswer
 
 
 class LLMClient:
     """
-    OpenAI-based LLM client for structured extraction.
-    
-    Provides a simple, provider-agnostic interface for LLM calls.
-    Can be easily swapped for other providers (Claude, Vertex AI, etc.)
+    OpenAI-based LLM client for structured and freeform research workflows.
+
+    The model is selected at runtime so callers can evaluate different chat models
+    without changing call sites.
     """
     
     def __init__(
@@ -48,7 +90,7 @@ class LLMClient:
         
         Args:
             api_key: OpenAI API key (if None, tries OPENAI_API_KEY env var)
-            model: Model name (default: gpt-4o-mini)
+            model: Chat model name used for requests
             temperature: Sampling temperature (default: 0.3)
             max_tokens: Max tokens in response (default: 1500)
         """
@@ -57,6 +99,8 @@ class LLMClient:
             raise ValueError(
                 "OpenAI API key not provided. Set OPENAI_API_KEY environment variable or pass api_key."
             )
+        if getattr(httpx, "Client", None) is None:
+            raise ModuleNotFoundError("httpx is required to use LLMClient.")
         
         self.model = model
         self.temperature = temperature
@@ -89,6 +133,7 @@ class LLMClient:
         Raises:
             ValueError: If LLM response cannot be parsed after retries
         """
+        PaperSummary, _ = _load_structured_models()
         prompt = build_summary_extraction_prompt(context, prompt_version=prompt_version)
         return self._generate_validated_json(
             prompt=prompt,
@@ -106,6 +151,7 @@ class LLMClient:
         prompt_version: str = "v1",
         retry_count: int = 2,
     ) -> dict:
+        _, GroundedAnswer = _load_structured_models()
         prompt = build_grounded_qa_prompt(
             question=question,
             context=context,
@@ -131,6 +177,49 @@ class LLMClient:
         response_text, _ = self._call_openai(prompt, max_tokens=200, temperature=0.1)
         return response_text.strip()
 
+    def generate_text(
+        self,
+        prompt: str,
+        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        retry_count: int = 1,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+    ) -> dict:
+        """
+        Generate freeform text for experiment or analysis tasks.
+
+        Returns a dictionary containing the generated text, usage metadata, and
+        attempt count. Existing structured call sites remain unchanged.
+        """
+        attempts_allowed = max(1, int(retry_count) + 1)
+
+        for attempt in range(1, attempts_allowed + 1):
+            try:
+                response_text, usage = self._call_openai(
+                    prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    system_prompt=system_prompt,
+                )
+                cleaned = (response_text or "").strip()
+                if not cleaned:
+                    raise ValueError("empty_response")
+                return {
+                    "text": cleaned,
+                    "attempts": attempt,
+                    "usage": usage,
+                    "raw_response": response_text,
+                }
+            except (ValueError, httpx.TimeoutException) as e:
+                if attempt < attempts_allowed:
+                    logger.warning(
+                        f"Freeform generation failed (attempt {attempt}/{attempts_allowed}): "
+                        f"{str(e)[:160]}. Retrying..."
+                    )
+                    time.sleep(1)
+                    continue
+                raise
+
     def _generate_validated_json(
         self,
         prompt: str,
@@ -139,6 +228,7 @@ class LLMClient:
         retry_count: int,
         max_tokens: Optional[int] = None,
     ) -> dict:
+        ValidationError = _load_pydantic()
         attempts_allowed = max(1, int(retry_count) + 1)
 
         for attempt in range(1, attempts_allowed + 1):
@@ -185,6 +275,7 @@ class LLMClient:
         prompt: str,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
+        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     ) -> tuple[str, dict]:
         """
         Make API call to OpenAI.
@@ -203,7 +294,7 @@ class LLMClient:
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are a careful research assistant. Follow the user's grounding constraints exactly and never use information outside the provided context.",
+                    "content": system_prompt,
                 }
             ],
             "temperature": self.temperature if temperature is None else temperature,

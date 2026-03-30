@@ -13,7 +13,7 @@ def _silver_table(database: str = DATABASE) -> str:
     return qualify_table("SILVER_PAPERS", database=database)
 
 
-def _chunks_table(database: str = DATABASE, schema: str | None = None) -> str:
+def _chunks_table(database: str = DATABASE, schema: Optional[str] = None) -> str:
     return qualify_table("SILVER_PAPER_CHUNKS", database=database)
 
 

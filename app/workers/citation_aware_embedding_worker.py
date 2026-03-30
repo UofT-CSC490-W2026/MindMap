@@ -57,7 +57,7 @@ def _upsert_ca_embedding(cur, paper_id: str, model_name: str, alpha: float, emb:
         )
 
 
-def _extract_ref_arxiv_id(ref) -> str | None:
+def _extract_ref_arxiv_id(ref) -> Optional[str]:
     if isinstance(ref, dict):
         return ref.get("ref_arxiv_id")
     if not isinstance(ref, str):

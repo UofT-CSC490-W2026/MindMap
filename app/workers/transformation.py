@@ -36,7 +36,7 @@ def _retry_delay_from_response(response, attempt: int, base: float = 1.5, cap: f
     return min(cap, base * (2 ** attempt) + random.uniform(0.0, 0.5))
 
 
-def _ss_get_json(url: str, params: dict | None = None, timeout: float = 20.0):
+def _ss_get_json(url: str, params: Optional[dict] = None, timeout: float = 20.0):
     import httpx
 
     global _ss_last_request_ts
@@ -83,7 +83,7 @@ def _ss_get_json(url: str, params: dict | None = None, timeout: float = 20.0):
                 f"Response body: {body}"
             ) from None
 
-def _ss_post_json(url: str, payload: dict, params: dict | None = None, timeout: float = 30.0):
+def _ss_post_json(url: str, payload: dict, params: Optional[dict] = None, timeout: float = 30.0):
     import httpx
 
     global _ss_last_request_ts

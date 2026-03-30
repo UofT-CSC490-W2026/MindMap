@@ -1,7 +1,7 @@
 """Reusable prompt templates for paper summarization."""
 
 import json
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, Optional
 
 
 def build_summary_extraction_prompt(context: str, prompt_version: str = "v1") -> str:
@@ -125,7 +125,7 @@ FOLLOW-UP QUESTION:
 STANDALONE QUESTION:"""
 
 
-def format_chunk_context(chunks: Iterable[Mapping[str, object]], max_chars: int | None = None) -> str:
+def format_chunk_context(chunks: Iterable[Mapping[str, object]], max_chars: Optional[int] = None) -> str:
     parts = []
     current_chars = 0
 

@@ -964,11 +964,11 @@ def test_extract_conclusion_success_path():
 
     with patch(
         "workers.transformation.extract_full_text_pdf",
-        MagicMock(local=MagicMock(return_value={"full_text": "\nConclusion\nKey finding"})),
+        MagicMock(local=MagicMock(return_value={"full_text": "\nConclusion\nKey finding about the proposed method and its results."})),
     ):
         result = extract_conclusion("2301.00001")
 
-    assert "Conclusion" in result
+    assert "Key finding" in result
 
 
 def test_extract_conclusion_handles_exception():

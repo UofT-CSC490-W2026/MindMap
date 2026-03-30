@@ -273,7 +273,7 @@ def retrieve_similar_chunks(
         params = [json.dumps(qvec), json.dumps(qvec), float(score_threshold)]
 
         if paper_id is not None:
-            paper_filter = "AND c.paper_id = %s"
+            paper_filter = 'AND c."paper_id" = %s'
             params.append(int(paper_id))
 
         params.append(int(top_k))
@@ -322,7 +322,7 @@ def retrieve_similar_chunks_local(
     query_text: str,
     top_k: int = 5,
     paper_id: Optional[int] = None,
-    score_threshold: float = 0.3,
+    score_threshold: float = 0.05,
     model_name: str = "sentence-transformers/all-MiniLM-L12-v2",
     max_context_chars: int = 20000,
     database: str = DATABASE,
@@ -351,23 +351,23 @@ def retrieve_similar_chunks_local(
         paper_filter = ""
         params = [json.dumps(qvec), json.dumps(qvec), float(score_threshold)]
         if paper_id is not None:
-            paper_filter = "AND c.paper_id = %s"
+            paper_filter = 'AND c."paper_id" = %s'
             params.append(int(paper_id))
         params.append(max(int(top_k) * 3, int(top_k)))
 
         cur.execute(
             f"""
             SELECT
-              c.chunk_id,
-              c.paper_id,
-              c.section_id,
-              c.chunk_text,
-              c.chunk_type,
-              c.token_estimate,
-              VECTOR_COSINE_SIMILARITY(c.embedding, PARSE_JSON(%s)::VECTOR(FLOAT, 384)) AS score
+              c."chunk_id",
+              c."paper_id",
+              c."section_id",
+              c."chunk_text",
+              c."chunk_type",
+              c."token_estimate",
+              VECTOR_COSINE_SIMILARITY(c."embedding", PARSE_JSON(%s)::VECTOR(FLOAT, 384)) AS score
             FROM {chunks} c
-            WHERE c.embedding IS NOT NULL
-              AND VECTOR_COSINE_SIMILARITY(c.embedding, PARSE_JSON(%s)::VECTOR(FLOAT, 384)) >= %s
+            WHERE c."embedding" IS NOT NULL
+              AND VECTOR_COSINE_SIMILARITY(c."embedding", PARSE_JSON(%s)::VECTOR(FLOAT, 384)) >= %s
               {paper_filter}
             ORDER BY score DESC
             LIMIT %s

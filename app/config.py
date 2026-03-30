@@ -33,15 +33,16 @@ def resolve_schema_for_table(table_name: str) -> str:
     else:
         return "BRONZE"  # Default fallback
     
-def qualify_table(table_name: str, database: str = DATABASE) -> str:
+def qualify_table(table_name: str, database: str = DATABASE, schema: str = None) -> str:
     """
     Returns the fully qualified table name, automatically resolving schema if not provided.
     Example usage:
         bronze_table = qualify_table("BRONZE_PAPERS")
         silver_table = qualify_table("SILVER_PAPERS")
+        app_table = qualify_table("APP_QA_LOGS", schema="APP")
     """
-    schema = resolve_schema_for_table(table_name)
-    return f'{database}.{schema}.{table_name}'
+    resolved_schema = schema if schema is not None else resolve_schema_for_table(table_name)
+    return f'{database}.{resolved_schema}.{table_name}'
 
 # Base image with common dependencies
 base_image = (

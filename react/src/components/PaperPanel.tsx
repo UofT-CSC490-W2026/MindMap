@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import type { GraphNode } from '../types/graph'
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'https://notsakura--mindmap-pipeline-fastapi-app.modal.run'
+const API_BASE = import.meta.env.VITE_API_URL ?? ''
 
 interface Message {
   role: 'user' | 'assistant'

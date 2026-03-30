@@ -5,10 +5,18 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
-from config import DATABASE, SCHEMA, app, openai_secret, rag_image, snowflake_secret, qualify_table
-from services.llm_client import LLMClient
-from workers.semantic_search_worker import retrieve_similar_chunks_local
-from utils import connect_to_snowflake
+try:
+    from app.config import DATABASE, app, openai_secret, rag_image, snowflake_secret, qualify_table
+    from app.services.llm_client import LLMClient
+    from app.workers.semantic_search_worker import retrieve_similar_chunks_local
+    from app.utils import connect_to_snowflake
+except ModuleNotFoundError:
+    from config import DATABASE, app, openai_secret, rag_image, snowflake_secret, qualify_table
+    from services.llm_client import LLMClient
+    from workers.semantic_search_worker import retrieve_similar_chunks_local
+    from utils import connect_to_snowflake
+
+SCHEMA = "APP"
 
 logger = logging.getLogger(__name__)
 

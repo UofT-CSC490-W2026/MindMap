@@ -6,6 +6,10 @@ MindMap is an AI-assisted academic literature explorer that helps researchers un
 
 ---
 
+For full API endpoint documentation see [API.md](./API.md).
+
+---
+
 ## Demo / Grading
 
 > **For graders / reviewers: you only need to open the frontend URL. No credentials, no setup.**
@@ -25,19 +29,56 @@ Note: Modal containers go cold after a period of inactivity. The first request a
 ```
 MindMap/
 ├── app/
-│   ├── api/          # FastAPI route handlers
-│   ├── services/     # Business logic (search, graph, ingestion, chat, paper)
-│   ├── workers/      # Modal pipeline workers (ingestion → graph)
-│   ├── config.py     # Modal app/images/secrets + DB constants
-│   ├── main.py       # Pipeline orchestrator (local_entrypoint)
-│   └── server.py     # FastAPI app definition
-├── react/            # Vite + React + TypeScript frontend
+│   ├── api/                              # FastAPI route handlers
+│   │   ├── graphs.py                     # Graph query + expand + cluster rebuild
+│   │   ├── health.py                     # Liveness check
+│   │   ├── ingestions.py                 # Paper ingestion jobs
+│   │   ├── papers.py                     # Paper detail, summary, chat
+│   │   ├── router.py                     # Router assembly
+│   │   └── search.py                     # Semantic search
+│   ├── services/                         # Business logic layer
+│   │   ├── chat_service.py               # RAG-backed paper Q&A
+│   │   ├── contracts.py                  # Pydantic request/response schemas
+│   │   ├── graph_service.py              # Graph query + expand logic
+│   │   ├── ingestion_service.py          # Ingestion job orchestration
+│   │   ├── llm_client.py                 # OpenAI client wrapper
+│   │   ├── paper_service.py              # Paper detail + summary retrieval
+│   │   ├── prompt_templates.py           # LLM prompt templates
+│   │   ├── qa_schema.py                  # QA response schema
+│   │   ├── search_service.py             # Semantic search logic
+│   │   └── summary_schema.py             # Summary response schema
+│   ├── workers/                          # Modal pipeline workers
+│   │   ├── chunking_worker.py            # Section/chunk splitting
+│   │   ├── citation_aware_embedding_worker.py
+│   │   ├── citation_worker.py            # Citation extraction
+│   │   ├── embedding_worker.py           # Paper + chunk embeddings
+│   │   ├── graph_worker.py               # Gold relationship materialization
+│   │   ├── ingestion.py                  # Bronze ingestion (SS + arXiv)
+│   │   ├── qa_worker.py                  # Chunk retrieval for RAG
+│   │   ├── semantic_search_worker.py     # Vector search + reranking
+│   │   ├── summary_worker.py             # LLM paper summarization
+│   │   └── transformation.py             # Bronze → Silver normalization
+│   ├── config.py                         # Modal app/images/secrets + DB constants
+│   ├── jobs.py                           # Detached Modal ingestion jobs
+│   ├── main.py                           # Pipeline orchestrator (local_entrypoint)
+│   ├── server.py                         # FastAPI app definition
+│   └── utils.py                          # Snowflake connection helper
+├── react/                                # Vite + React + TypeScript frontend
+│   └── src/
+│       ├── components/                   # UI components
+│       ├── hooks/                        # Custom React hooks
+│       ├── services/                     # API client + service modules
+│       ├── types/                        # TypeScript type definitions
+│       └── utils/                        # Frontend utilities
 ├── tests/
-│   ├── api/          # API route tests
-│   ├── properties/   # Property-based tests (Hypothesis)
-│   └── test_*.py     # Worker and service unit tests
-├── terraform/        # Snowflake infrastructure (IaC)
-└── evals/            # Evaluation scripts and assets
+│   ├── api/                              # API route tests
+│   ├── frontend/                         # Frontend component/hook/service tests
+│   ├── properties/                       # Property-based tests (Hypothesis)
+│   └── test_*.py                         # Worker and service unit tests
+├── terraform/                            # Snowflake infrastructure (IaC)
+├── requirements.txt                      # Python dependencies (full)
+├── requirements-test.txt                 # Python dependencies (tests only)
+└── profile_summary.txt                   # Benchmarking output
 ```
 
 ---
@@ -120,6 +161,11 @@ Prerequisites: Python 3.10+, `uv`, Modal CLI, Snowflake credentials
 # Python environment
 uv venv
 source .venv/bin/activate
+
+# For running tests only (fast — no ML deps like torch)
+uv pip install -r requirements-test.txt
+
+# For full local development (includes ML deps — slower install)
 uv pip install -r requirements.txt
 
 # Authenticate Modal (one-time)
@@ -203,6 +249,12 @@ All backend secrets are passed to Modal workers via `modal secret create`. The f
 ## Testing
 
 ### Backend
+
+Install dependencies first if you haven't already. For running tests you only need the lightweight test deps — no need to install `torch` or `sentence-transformers`:
+
+```bash
+uv pip install -r requirements-test.txt
+```
 
 ```bash
 # Run all tests

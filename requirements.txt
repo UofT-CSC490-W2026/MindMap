@@ -1,0 +1,27 @@
+# Core API / serving
+fastapi
+uvicorn
+pydantic
+httpx
+
+# Modal (remote execution)
+modal
+
+# Snowflake
+snowflake-connector-python
+
+# ML / embeddings
+sentence-transformers==2.7.0
+torch
+numpy
+scikit-learn
+
+# LLM
+openai
+
+# Ingestion / parsing
+arxiv
+requests
+feedparser
+pymupdf
+pandas

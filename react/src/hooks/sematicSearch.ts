@@ -67,13 +67,13 @@ export async function fetchWithFallback(urls: string[], signal: AbortSignal): Pr
 
   for (const url of urls) {
     try {
-      const timeoutSignal = AbortSignal.timeout(8000)
-      const combined = AbortSignal.any([signal, timeoutSignal])
-      const res = await fetch(url, { signal: combined })
+      const res = await fetch(url, { signal })
       if (res.ok) return res
       lastError = new Error(`Search failed on ${url}: ${res.status}`)
     } catch (err) {
       lastError = err
+      // If the caller aborted, stop trying
+      if ((err as Error).name === 'AbortError') throw err
     }
   }
 

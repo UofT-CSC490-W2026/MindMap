@@ -1,47 +1,42 @@
-import { useState, useCallback } from 'react'
-import { queryGraph } from '../services/graphService'
-import type { GraphNode, GraphLink, GraphResponse } from '../types/graph'
+import { useState, useCallback, useEffect } from 'react'
+import { getPapers, getRelationships } from '../services/graphService'
+import { buildGraph } from '../utils/graphUtils'
+import type { GraphNode, GraphLink } from '../types/graph'
 
 type GraphData = {
   nodes: GraphNode[]
   links: GraphLink[]
-  graphId: string | null
-  query: string | null
+}
+
+async function loadData() {
+  const [papers, relationships] = await Promise.all([getPapers(), getRelationships()])
+  return buildGraph(papers, relationships)
 }
 
 export function useGraphData() {
-  const [data, setData] = useState<GraphData>({ nodes: [], links: [], graphId: null, query: null })
-  const [loading, setLoading] = useState(false)
+  const [data, setData] = useState<GraphData>({ nodes: [], links: [] })
+  const [loading, setLoading] = useState(true)
 
-  const search = useCallback(async (query: string) => {
+  const fetch = useCallback(async () => {
     setLoading(true)
     try {
-      const response: GraphResponse = await queryGraph(query)
-      setData({
-        nodes: response.nodes.map((n: any) => ({
-          ...n,
-          shortTitle: n.label ?? n.title?.slice(0, 40) ?? '',
-          searchText: `${n.title} ${n.authors}`.toLowerCase(),
-          primaryTopic: n.cluster_name ?? '',
-          clusterId: n.cluster_id,
-          clusterName: n.cluster_name,
-        })),
-        links: response.links,
-        graphId: response.graph_id,
-        query: response.query ?? query,
-      })
+      const graph = await loadData()
+      setData({ nodes: graph.nodes, links: graph.links })
     } catch (err) {
       console.error('Failed to load graph data:', err)
-      setData({ nodes: [], links: [], graphId: null, query })
+      setData({ nodes: [], links: [] })
     } finally {
       setLoading(false)
     }
   }, [])
 
-  const reload = useCallback(async () => {
-    if (!data.query) return
-    await search(data.query)
-  }, [data.query, search])
+  useEffect(() => {
+    void fetch()
+  }, [fetch])
 
-  return { data, loading, search, reload }
+  const reload = useCallback(async () => {
+    await fetch()
+  }, [fetch])
+
+  return { data, loading, reload }
 }

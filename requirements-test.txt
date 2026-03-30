@@ -12,3 +12,4 @@ requests
 pydantic
 fastapi
 anyio
+numpy

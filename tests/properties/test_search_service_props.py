@@ -54,7 +54,7 @@ def test_search_result_count_bounded_by_limit(query, limit):
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
     with patch("app.services.search_service.httpx.AsyncClient", return_value=mock_client):
-        results = asyncio.get_event_loop().run_until_complete(
+        results = asyncio.run(
             search_service.search_papers(query, limit)
         )
 

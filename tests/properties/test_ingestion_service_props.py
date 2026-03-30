@@ -30,14 +30,16 @@ def test_ingestion_create_response_contains_job_id(arxiv_id):
     with patch(
         "app.services.ingestion_service.ingest_single_paper.remote",
         new_callable=MagicMock,
+        create=True,
     ) as mock_ingest, patch(
         "app.services.ingestion_service.run_post_bronze_job.spawn",
         new_callable=MagicMock,
+        create=True,
     ) as mock_spawn:
         mock_ingest.aio = AsyncMock(return_value=bronze_result)
         mock_spawn.aio = AsyncMock(return_value=fake_call)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             ingestion_service.create_ingestion(arxiv_id)
         )
 
@@ -62,7 +64,7 @@ def test_ingestion_status_response_valid_enum(job_id):
     fake_call.get.aio = AsyncMock(return_value={"result": "done"})
 
     with patch("app.services.ingestion_service.modal.FunctionCall.from_id", return_value=fake_call):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             ingestion_service.get_ingestion_status(job_id)
         )
 

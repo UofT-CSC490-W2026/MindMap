@@ -40,7 +40,7 @@ def _paper_row(paper_id: int):
         "year": 2020,
         "citationCount": 10,
     })
-    return (paper_id, f"Title {paper_id}", f"arxiv_{paper_id}", raw_payload, 1, "Cluster A")
+    return (paper_id, f"Title {paper_id}", f"arxiv_{paper_id}", raw_payload, 1, "Cluster A", 5)
 
 
 # ---------------------------------------------------------------------------
@@ -63,13 +63,14 @@ def test_graph_response_schema_conformance(query):
     with patch(
         "app.services.graph_service.semantic_search.remote",
         new_callable=MagicMock,
+        create=True,
     ) as mock_remote, patch(
         "app.services.graph_service.connect_to_snowflake",
         return_value=conn,
     ):
         mock_remote.aio = AsyncMock(return_value=search_return)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             graph_service.query_graph(query)
         )
 
@@ -116,13 +117,14 @@ def test_graph_expand_response_schema_conformance(paper_id):
     with patch(
         "app.services.graph_service.get_related_papers.remote",
         new_callable=MagicMock,
+        create=True,
     ) as mock_remote, patch(
         "app.services.graph_service.connect_to_snowflake",
         return_value=conn,
     ):
         mock_remote.aio = AsyncMock(return_value=neighbor_return)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             graph_service.expand_graph(graph_id, paper_id)
         )
 

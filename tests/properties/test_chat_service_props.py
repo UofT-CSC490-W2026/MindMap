@@ -46,7 +46,7 @@ def test_paper_chat_response_schema_conformance(paper_id, question):
     ) as mock_remote:
         mock_remote.aio = AsyncMock(return_value=worker_result)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             chat_service.answer_question(paper_id, question, session_id=None)
         )
 
@@ -76,7 +76,7 @@ def test_chat_citations_are_integers(paper_id, question):
     ) as mock_remote:
         mock_remote.aio = AsyncMock(return_value=worker_result)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             chat_service.answer_question(paper_id, question, session_id=None)
         )
 
@@ -107,7 +107,7 @@ def test_chat_session_history_continuity(paper_id, question, session_id):
     ) as mock_remote:
         mock_remote.aio = AsyncMock(return_value=worker_result)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             chat_service.answer_question(paper_id, question, session_id=session_id)
         )
 

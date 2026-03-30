@@ -66,7 +66,7 @@ def test_paper_detail_response_schema_conformance(paper_id):
     conn = _make_conn(cursor)
 
     with patch("app.services.paper_service.connect_to_snowflake", return_value=conn):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             paper_service.get_paper_detail(paper_id)
         )
 
@@ -89,7 +89,7 @@ def test_paper_summary_response_schema_conformance(paper_id):
     conn = _make_conn(cursor)
 
     with patch("app.services.paper_service.connect_to_snowflake", return_value=conn):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             paper_service.get_paper_summary(paper_id)
         )
 

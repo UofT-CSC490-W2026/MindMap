@@ -293,7 +293,9 @@ export default function App() {
     if (viewMode === 'semantic') {
       return {
         nodes: effectiveGraphData.nodes,
-        links: effectiveGraphData.links.filter(l => l.relationship_type === 'SIMILAR'),
+        links: effectiveGraphData.links.filter(l =>
+          ['SIMILAR', 'SUPPORT', 'CONTRADICT', 'NEUTRAL'].includes(l.relationship_type)
+        ),
       }
     }
     return {

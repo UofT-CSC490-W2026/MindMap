@@ -635,7 +635,6 @@ export default function App() {
           <button className="ghostBtn" type="button" onClick={() => navigate('/graphs')}>
             Graphs
           </button>
-          <button className="ghostBtn" type="button">Library</button>
           <div className="avatar" aria-hidden="true" />
         </div>
       </header>

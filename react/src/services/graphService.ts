@@ -1,7 +1,7 @@
 import type { Paper, Relationship } from '../types/paper'
 
 const USE_MOCK = false
-const API_BASE = import.meta.env.VITE_API_URL ?? 'https://benmarlow--mindmap-pipeline-fastapi-app.modal.run'
+const API_BASE = import.meta.env.VITE_API_URL ?? ''
 
 export async function getPapers(): Promise<Paper[]> {
   if (USE_MOCK) {

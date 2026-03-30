@@ -602,7 +602,7 @@ resource "snowflake_table" "app_qa_logs" {
   }
 
   column {
-    name = "role"
+    name = "ROLE"
     type = "VARCHAR"
   }
 

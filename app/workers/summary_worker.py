@@ -11,10 +11,16 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from utils import connect_to_snowflake
-from config import app, llm_image, openai_secret, snowflake_secret, DATABASE, qualify_table
-from services.llm_client import LLMClient
-from services.summary_schema import PaperSummary, SummaryContext
+try:
+    from app.utils import connect_to_snowflake
+    from app.config import app, llm_image, openai_secret, snowflake_secret, DATABASE, qualify_table
+    from app.services.llm_client import LLMClient
+    from app.services.summary_schema import PaperSummary, SummaryContext
+except ModuleNotFoundError:
+    from utils import connect_to_snowflake
+    from config import app, llm_image, openai_secret, snowflake_secret, DATABASE, qualify_table
+    from services.llm_client import LLMClient
+    from services.summary_schema import PaperSummary, SummaryContext
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +55,11 @@ def _fetch_unchunked_papers(
     
     cur.execute(
         f"""
-        SELECT sp.id, sp.arxiv_id, sp.title, sp.abstract
+        SELECT sp."id", sp."arxiv_id", sp."title", sp."abstract"
         FROM {papers} sp
         LEFT JOIN {summaries} gs
-            ON gs.paper_id = sp.id
-        WHERE gs.paper_id IS NULL
+            ON gs."paper_id" = sp."id"
+        WHERE gs."paper_id" IS NULL
         LIMIT {int(limit)}
         """
     )
@@ -77,21 +83,21 @@ def _fetch_paper_chunks(
     
     cur.execute(
         f"""
-        SELECT chunk_id, chunk_text, chunk_type, token_estimate
+        SELECT "chunk_id", "chunk_text", "chunk_type", "token_estimate"
         FROM {chunks}
-        WHERE paper_id = %s
+        WHERE "paper_id" = %s
         ORDER BY
             CASE
-                WHEN LOWER(chunk_type) = 'abstract' THEN 0
-                WHEN LOWER(chunk_type) = 'methods' THEN 1
-                WHEN LOWER(chunk_type) = 'results' THEN 2
-                WHEN LOWER(chunk_type) = 'conclusion' THEN 3
-                WHEN LOWER(chunk_type) = 'discussion' THEN 4
+                WHEN LOWER("chunk_type") = 'abstract' THEN 0
+                WHEN LOWER("chunk_type") = 'methods' THEN 1
+                WHEN LOWER("chunk_type") = 'results' THEN 2
+                WHEN LOWER("chunk_type") = 'conclusion' THEN 3
+                WHEN LOWER("chunk_type") = 'discussion' THEN 4
                 ELSE 5
             END,
-            token_estimate DESC,
-            section_id,
-            chunk_index
+            "token_estimate" DESC,
+            "section_id",
+            "chunk_index"
         LIMIT {int(limit * 3)}
         """,
         (int(paper_id),),
@@ -150,14 +156,14 @@ def _insert_summary(
                 %s AS model_name,
                 %s AS prompt_version
         ) s
-        ON t.paper_id = s.paper_id
+        ON t."paper_id" = s.paper_id
         WHEN MATCHED THEN UPDATE SET
-            t.summary_json = s.summary_json,
-            t.model_name = s.model_name,
-            t.prompt_version = s.prompt_version,
-            t.updated_at = CURRENT_TIMESTAMP()
+            t."summary_json" = s.summary_json,
+            t."model_name" = s.model_name,
+            t."prompt_version" = s.prompt_version,
+            t."updated_at" = CURRENT_TIMESTAMP()
         WHEN NOT MATCHED THEN INSERT
-            (paper_id, summary_json, model_name, prompt_version)
+            ("paper_id", "summary_json", "model_name", "prompt_version")
             VALUES (s.paper_id, s.summary_json, s.model_name, s.prompt_version)
         """,
         (int(paper_id), summary_json, model_name, prompt_version),
@@ -191,7 +197,7 @@ def _insert_evidence(
     cur.execute(
         f"""
         DELETE FROM {evidence}
-        WHERE paper_id = %s
+        WHERE "paper_id" = %s
         """,
         (int(paper_id),),
     )
@@ -217,7 +223,7 @@ def _insert_evidence(
         cur.executemany(
             f"""
             INSERT INTO {evidence}
-            (paper_id, summary_field, chunk_id, evidence_rank)
+            ("paper_id", "summary_field", "chunk_id", "evidence_rank")
             VALUES (%s, %s, %s, %s)
             """,
             rows_to_insert,
@@ -254,11 +260,11 @@ def generate_paper_summary(
         if not force:
             summaries = _summaries_table(database=database)
             cur.execute(
-                f"""
-                SELECT paper_id FROM {summaries} WHERE paper_id = %s LIMIT 1
-                """,
-                (int(paper_id),),
-            )
+            f"""
+            SELECT "paper_id" FROM {summaries} WHERE "paper_id" = %s LIMIT 1
+            """,
+            (int(paper_id),),
+        )
             if cur.fetchone():
                 logger.info(f"Summary already exists for paper {paper_id}, skipping (use force=True to overwrite)")
                 return {
@@ -271,7 +277,7 @@ def generate_paper_summary(
         papers = _papers_table(database=database)
         cur.execute(
             f"""
-            SELECT id, title, abstract FROM {papers} WHERE id = %s
+            SELECT "id", "title", "abstract" FROM {papers} WHERE "id" = %s
             """,
             (int(paper_id),),
         )

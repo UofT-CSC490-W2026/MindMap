@@ -34,6 +34,24 @@ def _qa_logs_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
     return f"{database}.{schema}.APP_QA_LOGS"
 
 
+def _quote_ident(identifier: str) -> str:
+    escaped = str(identifier).replace('"', '""')
+    return f'"{escaped}"'
+
+
+def _resolve_table_columns(cur, table_name: str) -> Dict[str, str]:
+    cur.execute(f"DESC TABLE {table_name}")
+    columns = [row[0] for row in cur.fetchall() if row and row[0]]
+    return {str(name).lower(): _quote_ident(str(name)) for name in columns}
+
+
+def _require_columns(column_map: Dict[str, str], required: List[str], table_name: str) -> Dict[str, str]:
+    missing = [name for name in required if name not in column_map]
+    if missing:
+        raise RuntimeError(f"Missing required columns in {table_name}: {missing}")
+    return {name: column_map[name] for name in required}
+
+
 def _ensure_qa_logs_table(cur, database: str = DATABASE, schema: str = SCHEMA) -> None:
     table = _qa_logs_table(database=database, schema=schema)
     cur.execute(
@@ -61,13 +79,18 @@ def _load_history(
     limit_messages: int = MAX_HISTORY_MESSAGES,
 ) -> List[Dict[str, Any]]:
     table = _qa_logs_table(database=database, schema=schema)
+    cols = _require_columns(
+        _resolve_table_columns(cur, table),
+        ["session_id", "paper_id", "role", "message", "rewritten_query", "cited_chunk_ids", "created_at", "log_id"],
+        table,
+    )
     cur.execute(
         f"""
-        SELECT "ROLE", "MESSAGE", "REWRITTEN_QUERY", "CITED_CHUNK_IDS"
+        SELECT {cols["role"]}, {cols["message"]}, {cols["rewritten_query"]}, {cols["cited_chunk_ids"]}
         FROM {table}
-        WHERE "SESSION_ID" = %s
-          AND "PAPER_ID" = %s
-        ORDER BY "CREATED_AT" DESC, "LOG_ID" DESC
+        WHERE {cols["session_id"]} = %s
+          AND {cols["paper_id"]} = %s
+        ORDER BY {cols["created_at"]} DESC, {cols["log_id"]} DESC
         LIMIT %s
         """,
         (session_id, int(paper_id), int(limit_messages)),
@@ -103,10 +126,15 @@ def _store_message(
     schema: str = SCHEMA,
 ) -> None:
     table = _qa_logs_table(database=database, schema=schema)
+    cols = _require_columns(
+        _resolve_table_columns(cur, table),
+        ["session_id", "paper_id", "role", "message", "rewritten_query", "cited_chunk_ids"],
+        table,
+    )
     cur.execute(
         f"""
         INSERT INTO {table}
-        ("SESSION_ID", "PAPER_ID", "ROLE", "MESSAGE", "REWRITTEN_QUERY", "CITED_CHUNK_IDS")
+        ({cols["session_id"]}, {cols["paper_id"]}, {cols["role"]}, {cols["message"]}, {cols["rewritten_query"]}, {cols["cited_chunk_ids"]})
         SELECT %s, %s, %s, %s, %s, PARSE_JSON(%s)
         """,
         (

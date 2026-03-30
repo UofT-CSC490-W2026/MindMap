@@ -1,36 +1,56 @@
-import type { Paper, Relationship } from '../types/paper'
+import { apiFetch, apiPost } from './apiClient'
+import type { GraphResponse, GraphExpandResponse } from '../types/graph'
 
-const USE_MOCK = false
-const API_BASE = import.meta.env.VITE_API_URL ?? ''
+export type Paper = {
+  id: number
+  title: string
+  [key: string]: unknown
+}
+
+export type Relationship = {
+  source_paper_id: number
+  target_paper_id: number
+  relationship_type: string
+  strength: number
+}
 
 export async function getPapers(): Promise<Paper[]> {
-  if (USE_MOCK) {
-    const data = await import('../data/mockPapers.json')
-    return data.default as Paper[]
+  const res = await fetch(`${_baseUrl()}/papers`)
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`GET /papers failed: ${res.status} ${text}`)
   }
-  const res = await fetch(`${API_BASE}/papers`)
-  if (!res.ok) throw new Error(`GET /papers failed: ${res.status} ${await res.text()}`)
   return res.json()
 }
 
 export async function getRelationships(): Promise<Relationship[]> {
-  if (USE_MOCK) {
-    const data = await import('../data/mockRelationships.json')
-    return data.default as Relationship[]
+  const res = await fetch(`${_baseUrl()}/relationships`)
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`GET /relationships failed: ${res.status} ${text}`)
   }
-  const res = await fetch(`${API_BASE}/relationships`)
-  if (!res.ok) throw new Error(`GET /relationships failed: ${res.status} ${await res.text()}`)
   return res.json()
 }
 
-export async function rebuildClusters(nClusters = 5): Promise<{
-  status: string
-  database?: string
-  result?: unknown
-}> {
-  const res = await fetch(`${API_BASE}/clusters/rebuild?n_clusters=${encodeURIComponent(String(nClusters))}`, {
-    method: 'POST',
-  })
-  if (!res.ok) throw new Error(`POST /clusters/rebuild failed: ${res.status} ${await res.text()}`)
+export async function rebuildClusters(nClusters = 5): Promise<{ status: string; result?: unknown }> {
+  const url = `${_baseUrl()}/clusters/rebuild?n_clusters=${nClusters}`
+  const res = await fetch(url, { method: 'POST' })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`POST /clusters/rebuild failed: ${res.status} ${text}`)
+  }
   return res.json()
+}
+
+function _baseUrl(): string {
+  const url = import.meta.env.VITE_API_URL ?? ''
+  return url.replace(/\/$/, '')
+}
+
+export async function queryGraph(query: string): Promise<GraphResponse> {
+  return apiPost<GraphResponse>('/graphs/query', { query })
+}
+
+export async function expandGraph(graphId: string, paperId: string): Promise<GraphExpandResponse> {
+  return apiPost<GraphExpandResponse>('/graphs/expand', { graph_id: graphId, paper_id: paperId })
 }

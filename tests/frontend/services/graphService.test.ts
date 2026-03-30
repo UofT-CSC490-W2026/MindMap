@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getPapers, getRelationships, rebuildClusters } from '../../../react/src/services/graphService'
+import { getPapers, getRelationships, rebuildClusters, queryGraph, expandGraph } from '../../../react/src/services/graphService'
 
 const mockFetch = vi.fn()
 
@@ -82,5 +82,30 @@ describe('graphService', () => {
     vi.stubGlobal('fetch', mockFetch)
 
     await expect(rebuildClusters()).rejects.toThrow('POST /clusters/rebuild failed: 500 oops')
+  })
+
+  it('queryGraph posts query and returns graph response', async () => {
+    const payload = { nodes: [], links: [], graph_id: 'g1', query: 'transformers' }
+    vi.stubGlobal('fetch', mockFetch)
+    mockFetch.mockResolvedValue({ ok: true, json: async () => payload })
+
+    const result = await queryGraph('transformers')
+    expect(result).toEqual(payload)
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(String(url)).toContain('/graphs/query')
+    expect(opts.method).toBe('POST')
+    expect(JSON.parse(opts.body)).toEqual({ query: 'transformers' })
+  })
+
+  it('expandGraph posts graph_id and paper_id and returns expand response', async () => {
+    const payload = { nodes: [], links: [] }
+    vi.stubGlobal('fetch', mockFetch)
+    mockFetch.mockResolvedValue({ ok: true, json: async () => payload })
+
+    const result = await expandGraph('g1', 'p42')
+    expect(result).toEqual(payload)
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(String(url)).toContain('/graphs/expand')
+    expect(JSON.parse(opts.body)).toEqual({ graph_id: 'g1', paper_id: 'p42' })
   })
 })

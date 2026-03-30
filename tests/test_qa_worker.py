@@ -99,6 +99,13 @@ def test_answer_paper_question_unrelated():
 # answer_paper_question — no chunks found
 # ---------------------------------------------------------------------------
 
+_FULL_COL_MAP = {
+    "session_id": '"SESSION_ID"', "paper_id": '"PAPER_ID"', "role": '"ROLE"',
+    "message": '"MESSAGE"', "rewritten_query": '"REWRITTEN_QUERY"',
+    "cited_chunk_ids": '"CITED_CHUNK_IDS"', "created_at": '"CREATED_AT"', "log_id": '"LOG_ID"',
+}
+
+
 def test_answer_paper_question_no_chunks_found():
     mock_cursor = MagicMock()
     mock_cursor.fetchall.return_value = []   # no history
@@ -111,7 +118,7 @@ def test_answer_paper_question_no_chunks_found():
 
     with patch("workers.qa_worker.connect_to_snowflake", return_value=mock_conn):
         with patch("workers.qa_worker.retrieve_similar_chunks_local", return_value=[]):
-            with patch("workers.qa_worker.qualify_table", return_value="DB.SILVER.APP_QA_LOGS"):
+            with patch("workers.qa_worker._resolve_table_columns", return_value=_FULL_COL_MAP):
                 result = answer_paper_question(paper_id=1, question="what is the main method?")
 
     assert result["status"] == "ok"
@@ -154,7 +161,7 @@ def test_answer_paper_question_with_chunks():
     with patch("workers.qa_worker.connect_to_snowflake", return_value=mock_conn):
         with patch("workers.qa_worker.retrieve_similar_chunks_local", return_value=chunks):
             with patch("workers.qa_worker.LLMClient", mock_llm_cls):
-                with patch("workers.qa_worker.qualify_table", return_value="DB.SILVER.APP_QA_LOGS"):
+                with patch("workers.qa_worker._resolve_table_columns", return_value=_FULL_COL_MAP):
                     result = answer_paper_question(paper_id=1, question="what is the main method?")
 
     assert result["status"] == "ok"
@@ -175,9 +182,14 @@ def test_load_history_with_json_cited_chunks():
     ]
     mock_cursor.execute.return_value = None
 
-    # Patch the table name function so the SELECT runs against our mock
+    col_map = {
+        "session_id": '"SESSION_ID"', "paper_id": '"PAPER_ID"', "role": '"ROLE"',
+        "message": '"MESSAGE"', "rewritten_query": '"REWRITTEN_QUERY"',
+        "cited_chunk_ids": '"CITED_CHUNK_IDS"', "created_at": '"CREATED_AT"', "log_id": '"LOG_ID"',
+    }
     with patch("workers.qa_worker._qa_logs_table", return_value="MOCK_TABLE"):
-        history = _load_history(mock_cursor, session_id="s1", paper_id=1, schema="SILVER")
+        with patch("workers.qa_worker._resolve_table_columns", return_value=col_map):
+            history = _load_history(mock_cursor, session_id="s1", paper_id=1, schema="SILVER")
 
     assert history[0]["role"] == "assistant"
     assert history[0]["cited_chunk_ids"] == []
@@ -194,8 +206,14 @@ def test_load_history_with_invalid_json_cited_chunks():
     ]
     mock_cursor.execute.return_value = None
 
+    col_map = {
+        "session_id": '"SESSION_ID"', "paper_id": '"PAPER_ID"', "role": '"ROLE"',
+        "message": '"MESSAGE"', "rewritten_query": '"REWRITTEN_QUERY"',
+        "cited_chunk_ids": '"CITED_CHUNK_IDS"', "created_at": '"CREATED_AT"', "log_id": '"LOG_ID"',
+    }
     with patch("workers.qa_worker._qa_logs_table", return_value="MOCK_TABLE"):
-        history = _load_history(mock_cursor, session_id="s1", paper_id=1, schema="SILVER")
+        with patch("workers.qa_worker._resolve_table_columns", return_value=col_map):
+            history = _load_history(mock_cursor, session_id="s1", paper_id=1, schema="SILVER")
 
     assert history[0]["cited_chunk_ids"] == []
 
@@ -228,7 +246,7 @@ def test_answer_paper_question_with_history_rewrite():
             {"chunk_id": 1, "chunk_text": "Method text.", "chunk_type": "methods", "paper_id": 1, "section_id": 1, "score": 0.9}
         ]):
             with patch("workers.qa_worker.LLMClient", return_value=mock_llm_instance):
-                with patch("workers.qa_worker.qualify_table", return_value="DB.SILVER.APP_QA_LOGS"):
+                with patch("workers.qa_worker._resolve_table_columns", return_value=_FULL_COL_MAP):
                     # "it" is a pronoun + short query → triggers rewrite
                     result = answer_paper_question(paper_id=1, question="what does it do")
 
@@ -262,7 +280,7 @@ def test_answer_paper_question_rewrite_failure_falls_back_to_original_question()
             ],
         ):
             with patch("workers.qa_worker.LLMClient", return_value=mock_llm_instance):
-                with patch("workers.qa_worker.qualify_table", return_value="DB.SILVER.APP_QA_LOGS"):
+                with patch("workers.qa_worker._resolve_table_columns", return_value=_FULL_COL_MAP):
                     result = answer_paper_question(paper_id=1, question="what does it do")
 
     assert result["status"] == "ok"
@@ -278,7 +296,7 @@ def test_answer_paper_question_exception_path():
         execute=MagicMock(side_effect=RuntimeError("DB down")),
     )
     with patch("workers.qa_worker.connect_to_snowflake", return_value=mock_conn):
-        with patch("workers.qa_worker.qualify_table", return_value="DB.SILVER.APP_QA_LOGS"):
+        with patch("workers.qa_worker._resolve_table_columns", return_value=_FULL_COL_MAP):
             result = answer_paper_question(paper_id=1, question="what is the method?")
     assert result["status"] == "error"
     assert "DB down" in result["error"]

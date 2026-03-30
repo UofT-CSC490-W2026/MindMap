@@ -5,18 +5,12 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
-try:
-    from app.config import DATABASE, app, openai_secret, rag_image, snowflake_secret, qualify_table
-    from app.services.llm_client import LLMClient
-    from app.workers.semantic_search_worker import retrieve_similar_chunks_local
-    from app.utils import connect_to_snowflake
-except ModuleNotFoundError:
-    from config import DATABASE, app, openai_secret, rag_image, snowflake_secret, qualify_table
-    from services.llm_client import LLMClient
-    from workers.semantic_search_worker import retrieve_similar_chunks_local
-    from utils import connect_to_snowflake
+from app.config import DATABASE, app, openai_secret, rag_image, snowflake_secret, qualify_table
+from app.services.llm_client import LLMClient
+from app.workers.semantic_search_worker import retrieve_similar_chunks_local
+from app.utils import connect_to_snowflake
 
-SCHEMA = "APP"
+SCHEMA = "GOLD"
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +31,25 @@ UNRELATED_KEYWORDS = {
 
 
 def _qa_logs_table(database: str = DATABASE, schema: str = SCHEMA) -> str:
-    return qualify_table("APP_QA_LOGS", database=database, schema=schema)
+    return f"{database}.{schema}.APP_QA_LOGS"
+
+
+def _quote_ident(identifier: str) -> str:
+    escaped = str(identifier).replace('"', '""')
+    return f'"{escaped}"'
+
+
+def _resolve_table_columns(cur, table_name: str) -> Dict[str, str]:
+    cur.execute(f"DESC TABLE {table_name}")
+    columns = [row[0] for row in cur.fetchall() if row and row[0]]
+    return {str(name).lower(): _quote_ident(str(name)) for name in columns}
+
+
+def _require_columns(column_map: Dict[str, str], required: List[str], table_name: str) -> Dict[str, str]:
+    missing = [name for name in required if name not in column_map]
+    if missing:
+        raise RuntimeError(f"Missing required columns in {table_name}: {missing}")
+    return {name: column_map[name] for name in required}
 
 
 def _quote_ident(identifier: str) -> str:

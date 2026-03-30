@@ -1,0 +1,12 @@
+[run]
+source = app
+omit =
+    app/main.py
+    app/local_api.py
+    app/server.py
+    app/setup_schema.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:

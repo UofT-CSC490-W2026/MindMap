@@ -9,9 +9,9 @@ from typing import Optional, Type
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from services.summary_schema import PaperSummary
-from services.qa_schema import GroundedAnswer
-from services.prompt_templates import (
+from app.services.summary_schema import PaperSummary
+from app.services.qa_schema import GroundedAnswer
+from app.services.prompt_templates import (
     build_grounded_qa_prompt,
     build_query_rewrite_prompt,
     build_summary_extraction_prompt,

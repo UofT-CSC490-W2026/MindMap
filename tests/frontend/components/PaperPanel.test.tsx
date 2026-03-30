@@ -131,4 +131,25 @@ describe('PaperPanel', () => {
     resolveFetch?.({ json: async () => ({ reply: 'done' }) })
     await waitFor(() => expect(screen.getByText('done')).toBeInTheDocument())
   })
+
+  it('stores session_id from chat response for subsequent messages', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ json: async () => ({ reply: 'First reply', session_id: 'sess-abc' }) })
+      .mockResolvedValueOnce({ json: async () => ({ reply: 'Second reply' }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<PaperPanel paper={paper} lightMode={false} onClose={() => {}} />)
+    const input = screen.getByPlaceholderText(/ask about this paper/i)
+
+    fireEvent.change(input, { target: { value: 'First question' } })
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+    await waitFor(() => expect(screen.getByText('First reply')).toBeInTheDocument())
+
+    fireEvent.change(input, { target: { value: 'Second question' } })
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+    await waitFor(() => expect(screen.getByText('Second reply')).toBeInTheDocument())
+
+    const secondCallBody = JSON.parse(fetchMock.mock.calls[1][1].body)
+    expect(secondCallBody.session_id).toBe('sess-abc')
+  })
 })

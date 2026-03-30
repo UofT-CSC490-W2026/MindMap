@@ -76,4 +76,17 @@ describe('paperService', () => {
 
     await expect(getPaperStatus('job-2')).rejects.toThrow('bad status')
   })
+
+  it('strips trailing slash from VITE_API_URL', async () => {
+    const original = import.meta.env.VITE_API_URL
+    import.meta.env.VITE_API_URL = 'https://api.test/'
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ status: 'done' }) })
+    vi.stubGlobal('fetch', mockFetch)
+
+    await getPaperStatus('j1')
+    const [url] = mockFetch.mock.calls[0]
+    // path should not have a double slash after the host
+    expect(String(url)).toMatch(/^https:\/\/api\.test\/papers\//)
+    import.meta.env.VITE_API_URL = original
+  })
 })

@@ -1,0 +1,43 @@
+### Summary extraction prompt
+
+You are an expert research assistant.
+
+You are given text chunks from a research paper. Extract a grounded structured summary.
+
+Rules:
+- Use only the provided text.
+- Do not infer facts not stated in the text.
+- If a field is unclear, return an empty string or empty list.
+- Be concise and factual.
+- Prefer direct, technical wording.
+
+Return valid JSON with this schema:
+{
+  "research_question": "string",
+  "methods": ["string"],
+  "main_claims": ["string"],
+  "key_findings": ["string"],
+  "limitations": ["string"],
+  "conclusion": "string"
+}
+
+Paper text:
+{{paper_text}}
+
+
+Q&A prompt
+
+You are answering a question about a research paper.
+
+Use only the provided context.
+If the answer is not supported by the context, say that the paper context provided is insufficient.
+
+Return:
+1. a concise answer
+2. the chunk ids you relied on
+
+Context:
+{{retrieved_chunks}}
+
+Question:
+{{user_question}}

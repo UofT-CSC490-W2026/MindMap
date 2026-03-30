@@ -1,0 +1,110 @@
+# -----------------------------
+# OS / editor junk
+# -----------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# -----------------------------
+# Python
+# -----------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python packaging / build outputs
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python tooling caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.hypothesis/
+profile_output.txt
+extract_profile.py
+
+# Jupyter
+.ipynb_checkpoints/
+
+# -----------------------------
+# Local config / secrets
+# -----------------------------
+.env
+.env.*
+*.env
+*.pem
+*.key
+
+# -----------------------------
+# JavaScript / React / Vite
+# -----------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Frontend build outputs
+react/dist/
+react/.vite/
+react/.cache/
+
+# -----------------------------
+# Terraform
+# -----------------------------
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# -----------------------------
+# Project-specific generated dirs
+# -----------------------------
+A4/tmp/
+tmp/
+experiments/*
+!experiments/README.md
+!experiments/__init__.py
+!experiments/config/
+!experiments/config/rag_questions.csv
+!experiments/kg/
+!experiments/kg/__init__.py
+!experiments/kg/*.py
+!experiments/rag/
+!experiments/rag/__init__.py
+!experiments/rag/*.py
+!experiments/results/
+experiments/results/**
+!experiments/results/.gitkeep
+!experiments/results/kg/
+experiments/results/kg/**
+!experiments/results/kg/.gitkeep
+!experiments/results/rag/
+experiments/results/rag/**
+!experiments/results/rag/.gitkeep
+RAG_IMPLEMENTATION_SUMMARY.md
+app/lib
+*.html
+lib/
+*.png

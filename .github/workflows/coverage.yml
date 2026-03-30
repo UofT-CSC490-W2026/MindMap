@@ -1,0 +1,161 @@
+name: Tests and Coverage
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - ben
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-test.txt
+
+      - name: Run pytest with coverage
+        run: |
+          PYTHONPATH=. pytest tests \
+            --cov=app/workers \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-report=json:coverage.json
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: react/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: react
+        run: npm ci
+
+      - name: Run frontend tests with coverage
+        working-directory: react
+        run: npm run test:coverage
+
+      - name: Build coverage summary
+        id: coverage_summary
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          with open("coverage.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          totals = data["totals"]
+          pct = float(totals["percent_covered"])
+          covered = int(totals["covered_lines"])
+          total = int(totals["num_statements"])
+
+          summary = (
+              "## Coverage Report\n\n"
+              f"- Total coverage: **{pct:.2f}%**\n"
+              f"- Lines covered: **{covered}/{total}**\n"
+          )
+
+          with open("coverage-summary.md", "w", encoding="utf-8") as f:
+              f.write(summary)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"percent={pct:.2f}\n")
+              f.write(f"covered={covered}\n")
+              f.write(f"total={total}\n")
+          PY
+
+      - name: Add coverage to job summary
+        run: cat coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post PR coverage comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const marker = "<!-- coverage-report -->";
+            const summary = fs.readFileSync("coverage-summary.md", "utf8");
+            const body = `${marker}\n${summary}`;
+            const issue_number = context.issue.number;
+            const { owner, repo } = context.repo;
+
+            const comments = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            const existing = comments.data.find(
+              (c) => c.user.type === "Bot" && c.body && c.body.includes(marker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }
+
+      - name: Generate local coverage badge
+        run: |
+          genbadge coverage --local -i coverage.xml -o coverage.svg
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            coverage.json
+            coverage.svg
+
+      - name: Upload frontend coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage-report
+          path: |
+            react/coverage
+
+      - name: Commit coverage badge to branch
+        if: github.event_name == 'push'
+        run: |
+          if git diff --quiet -- coverage.svg; then
+            echo "No coverage badge changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add coverage.svg
+          git commit -m "chore(ci): update coverage badge [skip ci]"
+          git push

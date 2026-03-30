@@ -2,140 +2,108 @@ import { useNavigate } from 'react-router-dom'
 
 const GRAPHS = [
   {
-    id: 'citation-network',
-    title: 'Citation Network',
-    description: 'Explore how papers reference each other across NLP, Graphs, and IR research.',
-    nodes: 16,
-    edges: 24,
-    clusters: 3,
+    id: 'model-quantization',
+    query: 'model quantization',
+    title: 'Model Quantization',
+    description: 'Explore research on compressing neural networks through quantization techniques.',
     dotColor: 'var(--research-accent)',
-    tag: 'NLP',
+    tag: 'Efficiency',
     tagColor: 'var(--research-accent)',
     preview: [
-      { x: 50, y: 40, r: 10, color: '#64ffda' },
-      { x: 25, y: 65, r: 7, color: '#60a5fa' },
-      { x: 75, y: 65, r: 7, color: '#60a5fa' },
-      { x: 15, y: 40, r: 5, color: '#a855f7' },
-      { x: 85, y: 40, r: 5, color: '#a855f7' },
+      { x: 50, y: 38, r: 10, color: '#64ffda' },
+      { x: 24, y: 62, r: 7, color: '#60a5fa' },
+      { x: 76, y: 62, r: 7, color: '#60a5fa' },
+      { x: 14, y: 38, r: 5, color: '#a855f7' },
+      { x: 86, y: 38, r: 5, color: '#a855f7' },
       { x: 50, y: 80, r: 5, color: '#64ffda' },
     ],
     lines: [
-      [50, 40, 25, 65], [50, 40, 75, 65], [25, 65, 15, 40],
-      [75, 65, 85, 40], [25, 65, 50, 80], [75, 65, 50, 80],
+      [50, 38, 24, 62], [50, 38, 76, 62], [24, 62, 14, 38],
+      [76, 62, 86, 38], [24, 62, 50, 80], [76, 62, 50, 80],
     ],
   },
   {
-    id: 'topic-clusters',
-    title: 'Topic Clusters',
-    description: 'Visualize how research topics like Transformers, Embeddings, and GNNs interconnect.',
-    nodes: 12,
-    edges: 18,
-    clusters: 4,
-    dotColor: '#60a5fa',
-    tag: 'Topics',
-    tagColor: '#60a5fa',
-    preview: [
-      { x: 30, y: 35, r: 9, color: '#60a5fa' },
-      { x: 70, y: 35, r: 9, color: '#a855f7' },
-      { x: 30, y: 70, r: 9, color: '#64ffda' },
-      { x: 70, y: 70, r: 9, color: '#f59e0b' },
-      { x: 50, y: 52, r: 6, color: '#8892b0' },
-    ],
-    lines: [
-      [30, 35, 50, 52], [70, 35, 50, 52], [30, 70, 50, 52], [70, 70, 50, 52],
-      [30, 35, 70, 35], [30, 70, 70, 70],
-    ],
-  },
-  {
-    id: 'author-connections',
-    title: 'Author Connections',
-    description: 'Map co-authorship and collaboration patterns across landmark ML papers.',
-    nodes: 10,
-    edges: 14,
-    clusters: 2,
-    dotColor: '#a855f7',
-    tag: 'Authors',
-    tagColor: '#a855f7',
-    preview: [
-      { x: 20, y: 50, r: 8, color: '#a855f7' },
-      { x: 45, y: 30, r: 6, color: '#a855f7' },
-      { x: 45, y: 70, r: 6, color: '#a855f7' },
-      { x: 70, y: 50, r: 8, color: '#64ffda' },
-      { x: 85, y: 30, r: 5, color: '#64ffda' },
-      { x: 85, y: 70, r: 5, color: '#64ffda' },
-    ],
-    lines: [
-      [20, 50, 45, 30], [20, 50, 45, 70], [45, 30, 70, 50],
-      [45, 70, 70, 50], [70, 50, 85, 30], [70, 50, 85, 70],
-    ],
-  },
-  {
-    id: 'embedding-space',
-    title: 'Embedding Space',
-    description: 'See how word2vec, BERT, and GNN embeddings cluster in semantic space.',
-    nodes: 20,
-    edges: 30,
-    clusters: 5,
+    id: 'nuclear-physics',
+    query: 'nuclear physics',
+    title: 'Nuclear Physics',
+    description: 'Explore research on nuclear reactions, particle interactions, and atomic structure.',
     dotColor: '#f59e0b',
-    tag: 'Embeddings',
+    tag: 'Physics',
     tagColor: '#f59e0b',
     preview: [
-      { x: 25, y: 25, r: 7, color: '#f59e0b' },
-      { x: 55, y: 20, r: 5, color: '#f59e0b' },
-      { x: 75, y: 35, r: 6, color: '#64ffda' },
-      { x: 20, y: 65, r: 6, color: '#60a5fa' },
-      { x: 50, y: 60, r: 8, color: '#a855f7' },
-      { x: 78, y: 68, r: 5, color: '#64ffda' },
+      { x: 50, y: 45, r: 10, color: '#f59e0b' },
+      { x: 28, y: 30, r: 6, color: '#64ffda' },
+      { x: 72, y: 30, r: 6, color: '#64ffda' },
+      { x: 20, y: 62, r: 5, color: '#60a5fa' },
+      { x: 80, y: 62, r: 5, color: '#60a5fa' },
+      { x: 50, y: 75, r: 5, color: '#f59e0b' },
     ],
     lines: [
-      [25, 25, 55, 20], [55, 20, 75, 35], [20, 65, 50, 60],
-      [50, 60, 78, 68], [25, 25, 20, 65], [75, 35, 78, 68],
+      [50, 45, 28, 30], [50, 45, 72, 30], [50, 45, 20, 62],
+      [50, 45, 80, 62], [50, 45, 50, 75],
     ],
   },
   {
-    id: 'rag-pipeline',
-    title: 'RAG Pipeline',
-    description: 'Trace retrieval-augmented generation flows from query to grounded response.',
-    nodes: 8,
-    edges: 10,
-    clusters: 2,
-    dotColor: '#64ffda',
-    tag: 'IR',
-    tagColor: '#64ffda',
-    preview: [
-      { x: 15, y: 50, r: 7, color: '#64ffda' },
-      { x: 38, y: 30, r: 5, color: '#60a5fa' },
-      { x: 38, y: 70, r: 5, color: '#60a5fa' },
-      { x: 62, y: 50, r: 7, color: '#64ffda' },
-      { x: 85, y: 50, r: 6, color: '#a855f7' },
-    ],
-    lines: [
-      [15, 50, 38, 30], [15, 50, 38, 70],
-      [38, 30, 62, 50], [38, 70, 62, 50],
-      [62, 50, 85, 50],
-    ],
-  },
-  {
-    id: 'knowledge-graph',
-    title: 'Knowledge Graph',
-    description: 'Browse entity relationships extracted from paper abstracts and metadata.',
-    nodes: 25,
-    edges: 40,
-    clusters: 6,
+    id: 'astronomy',
+    query: 'astronomy',
+    title: 'Astronomy',
+    description: 'Map the research landscape around stars, galaxies, cosmology, and space observation.',
     dotColor: '#60a5fa',
-    tag: 'Graphs',
+    tag: 'Astronomy',
     tagColor: '#60a5fa',
     preview: [
-      { x: 50, y: 50, r: 10, color: '#60a5fa' },
-      { x: 25, y: 30, r: 6, color: '#64ffda' },
-      { x: 75, y: 30, r: 6, color: '#64ffda' },
-      { x: 20, y: 65, r: 5, color: '#a855f7' },
-      { x: 80, y: 65, r: 5, color: '#a855f7' },
+      { x: 50, y: 50, r: 9, color: '#60a5fa' },
+      { x: 22, y: 35, r: 6, color: '#a855f7' },
+      { x: 78, y: 35, r: 6, color: '#a855f7' },
+      { x: 22, y: 65, r: 5, color: '#64ffda' },
+      { x: 78, y: 65, r: 5, color: '#64ffda' },
+      { x: 50, y: 22, r: 5, color: '#60a5fa' },
+    ],
+    lines: [
+      [50, 50, 22, 35], [50, 50, 78, 35], [50, 50, 22, 65],
+      [50, 50, 78, 65], [50, 50, 50, 22],
+    ],
+  },
+  {
+    id: 'natural-language-processing',
+    query: 'natural language processing',
+    title: 'Natural Language Processing',
+    description: 'Discover connections across NLP research from parsing to large language models.',
+    dotColor: '#64ffda',
+    tag: 'NLP',
+    tagColor: '#64ffda',
+    preview: [
+      { x: 50, y: 40, r: 9, color: '#64ffda' },
+      { x: 25, y: 60, r: 7, color: '#60a5fa' },
+      { x: 75, y: 60, r: 7, color: '#60a5fa' },
+      { x: 12, y: 38, r: 5, color: '#a855f7' },
+      { x: 88, y: 38, r: 5, color: '#a855f7' },
+      { x: 50, y: 78, r: 5, color: '#64ffda' },
+    ],
+    lines: [
+      [50, 40, 25, 60], [50, 40, 75, 60], [25, 60, 12, 38],
+      [75, 60, 88, 38], [25, 60, 50, 78], [75, 60, 50, 78],
+    ],
+  },
+  {
+    id: 'attention-is-all-you-need',
+    query: 'Attention Is All You Need',
+    title: 'Attention Is All You Need',
+    description: 'Trace the citation landscape around the landmark Transformer paper.',
+    dotColor: '#a855f7',
+    tag: 'Transformers',
+    tagColor: '#a855f7',
+    preview: [
+      { x: 50, y: 50, r: 11, color: '#a855f7' },
+      { x: 25, y: 28, r: 6, color: '#64ffda' },
+      { x: 75, y: 28, r: 6, color: '#64ffda' },
+      { x: 18, y: 65, r: 5, color: '#60a5fa' },
+      { x: 82, y: 65, r: 5, color: '#60a5fa' },
       { x: 50, y: 78, r: 5, color: '#f59e0b' },
     ],
     lines: [
-      [50, 50, 25, 30], [50, 50, 75, 30], [50, 50, 20, 65],
-      [50, 50, 80, 65], [50, 50, 50, 78],
+      [50, 50, 25, 28], [50, 50, 75, 28], [50, 50, 18, 65],
+      [50, 50, 82, 65], [50, 50, 50, 78],
     ],
   },
 ]
@@ -185,7 +153,7 @@ export default function GraphsGallery() {
             <button
               key={g.id}
               type="button"
-              onClick={() => navigate('/')}
+              onClick={() => navigate(`/?q=${encodeURIComponent(g.query)}`)}
               style={{
                 textAlign: 'left',
                 background: 'var(--panel-bg)',
@@ -273,25 +241,8 @@ export default function GraphsGallery() {
                 <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6, lineHeight: 1.2 }}>
                   {g.title}
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--research-text)', lineHeight: 1.5, marginBottom: 14 }}>
+                <div style={{ fontSize: 12, color: 'var(--research-text)', lineHeight: 1.5 }}>
                   {g.description}
-                </div>
-
-                <div style={{ display: 'flex', gap: 16 }}>
-                  {[
-                    { label: 'Nodes', value: g.nodes, color: 'var(--research-accent)' },
-                    { label: 'Edges', value: g.edges, color: '#60a5fa' },
-                    { label: 'Clusters', value: g.clusters, color: '#a855f7' },
-                  ].map((m) => (
-                    <div key={m.label}>
-                      <div style={{ fontSize: 10, color: 'var(--research-text)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 2 }}>
-                        {m.label}
-                      </div>
-                      <div style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 800, fontSize: 14, color: m.color }}>
-                        {m.value}
-                      </div>
-                    </div>
-                  ))}
                 </div>
               </div>
             </button>
